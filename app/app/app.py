@@ -18,6 +18,14 @@ from audit import auditar_fatura, summary_alertas
 from excel_filler import preencher_template
 from master_excel import gerar_master
 
+# Neoenergia PE — importação condicional
+try:
+    from neoenergia_pe.extractor import parse_fatura as neo_parse
+    from neoenergia_pe.audit import auditar as neo_auditar
+    NEO_DISPONIVEL = True
+except ImportError:
+    NEO_DISPONIVEL = False
+
 APP_DIR = Path(__file__).parent
 ROOT = APP_DIR.parent
 INPUT_DIR = ROOT / "input"
@@ -196,7 +204,7 @@ hr { border-color: #E5EBE0; }
 st.markdown("""
 <div class="me-header">
     <h1>⚡ Minuto Energia — Auditor de Faturas</h1>
-    <p>CPFL Piratininga · Auditoria automática conforme REH ANEEL e Lei 14.300/2022</p>
+    <p>Auditoria automática conforme REH ANEEL e Lei 14.300/2022</p>
 </div>
 """, unsafe_allow_html=True)
 
@@ -205,6 +213,42 @@ st.markdown("""
 def safe_filename(s):
     s = re.sub(r"[^\w\d\-_]", "_", str(s))
     return s[:80]
+
+
+def processar_fatura_neo(pdf_path, run_dir):
+    pdf_path = Path(pdf_path)
+    r = neo_parse(str(pdf_path))
+    triagem, motivos, metricas = neo_auditar(r)
+
+    # Converte para formato compatível com a UI
+    status_map = {"OK": "OK", "INVESTIGAR": "INVESTIGAR", "DIVERGENCIA": "ATENÇÃO"}
+    status = status_map.get(triagem, "OK")
+
+    if motivos:
+        alertas = [{"cat": "Auditoria", "descricao": m, "status": status} for m in motivos]
+    else:
+        alertas = [{"cat": "Auditoria", "descricao": "Fatura conferida", "status": "OK"}]
+
+    dados = {
+        "cliente_nome":    r.get("conta_contrato", ""),
+        "uc":              r.get("conta_contrato", ""),
+        "subgrupo":        "B3",
+        "leitura_anterior": None,
+        "leitura_atual":   None,
+        "dias_ciclo":      r.get("nr_dias"),
+        "total_fatura":    r.get("total_fatura"),
+        "total_a_pagar":   r.get("total_fatura"),
+        "mes_ref":         r.get("ref_mes_ano", ""),
+        "nota_fiscal":     r.get("nr_nota_fiscal", ""),
+    }
+
+    return {
+        "pdf_filename": pdf_path.name,
+        "dados": dados,
+        "config": {},
+        "audit_result": {"alertas": alertas, "auditado": {"reh_aplicada": ""}},
+        "excel_individual_path": "",
+    }
 
 
 def processar_fatura(pdf_path, config_default, run_dir):
@@ -236,6 +280,11 @@ def processar_fatura(pdf_path, config_default, run_dir):
 with st.sidebar:
     st.markdown("### Configuração do Lote")
     st.markdown("---")
+
+    opcoes_dist = ["CPFL Piratininga", "Neoenergia PE"]
+    distribuidora = st.selectbox("Distribuidora", opcoes_dist)
+
+    st.markdown("---")
     data_adesao = st.date_input(
         "Data de adesão MMGD",
         value=datetime.date(2022, 1, 1),
@@ -261,7 +310,7 @@ tab1, tab2, tab3 = st.tabs(["📤 Processar faturas", "📊 Resultados", "ℹ️
 # ── Tab 1: Upload ─────────────────────────────────────────────────────────────
 with tab1:
     st.markdown("#### Selecione as faturas em PDF")
-    st.caption("Formatos aceitos: Nota Fiscal Série C (até set/2025) e DANF3E (out/2025+)")
+    st.caption("Formatos aceitos: faturas em PDF")
 
     uploaded = st.file_uploader(
         "Arraste os PDFs aqui ou clique para selecionar",
@@ -293,7 +342,10 @@ with tab1:
                 with open(tmp_pdf, "wb") as f:
                     f.write(file.read())
                 try:
-                    res = processar_fatura(tmp_pdf, config_default, run_dir)
+                    if distribuidora == "Neoenergia PE":
+                        res = processar_fatura_neo(tmp_pdf, run_dir)
+                    else:
+                        res = processar_fatura(tmp_pdf, config_default, run_dir)
                     resultados.append(res)
                 except Exception as e:
                     erros.append({"file": file.name, "error": str(e)})
@@ -459,7 +511,7 @@ with tab3:
     st.markdown("""
 A ferramenta extrai, audita e classifica cada item da fatura de forma automática:
 
-1. Você carrega os PDFs de fatura CPFL Piratininga
+1. Você carrega os PDFs das faturas
 2. O sistema extrai todos os dados: cliente, UC, leituras, valores, bandeiras, tributos
 3. Recalcula tarifas conforme a REH ANEEL vigente na data da fatura
 4. Compara o cobrado vs o auditado e classifica como **Conferido / Investigar / Atenção**
