@@ -1,0 +1,32 @@
+{
+  "distribuidora": "CPFL Piratininga",
+  "subgrupos": ["B1", "B2", "B3"],
+  "tarifas": [
+    {
+      "reh": "3409/2024",
+      "vigencia_inicio": "2024-10-23",
+      "vigencia_fim": "2025-10-22",
+      "subgrupos": ["B1", "B2", "B3"],
+      "modalidade": "Convencional",
+      "postos": {
+        "Unico": {
+          "TUSD": 0.37008,
+          "TE": 0.32865
+        }
+      }
+    },
+    {
+      "reh": "3543/2025",
+      "vigencia_inicio": "2025-10-23",
+      "vigencia_fim": "2026-10-22",
+      "subgrupos": ["B1", "B2", "B3"],
+      "modalidade": "Convencional",
+      "postos": {
+        "Unico": {
+          "TUSD": 0.39564,
+          "TE": 0.34405
+        }
+      }
+    }
+  ]
+}

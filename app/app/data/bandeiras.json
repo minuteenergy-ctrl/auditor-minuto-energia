@@ -1,0 +1,12 @@
+{
+  "tarifas": [
+    {"vigencia_inicio": "2015-01-01", "vigencia_fim": "2099-12-31",
+     "patamares": {
+       "VERDE": 0.0,
+       "AMARELA": 0.01885,
+       "VERMELHA-P1": 0.04463,
+       "VERMELHA-P2": 0.07877
+     }
+    }
+  ]
+}

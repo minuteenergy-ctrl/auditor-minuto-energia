@@ -1,0 +1,9 @@
+{
+  "icms_sp": 0.18,
+  "tolerancias": {
+    "valor_rs": 0.10,
+    "tarifa_unit_pct": 0.0001
+  },
+  "ciclo_dias_min": 15,
+  "ciclo_dias_max": 45
+}
