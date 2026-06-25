@@ -1,0 +1,39 @@
+{
+  "distribuidora": "CPFL Paulista",
+  "subgrupos": ["A4"],
+  "modalidade": "Verde",
+  "tarifas": [
+    {
+      "reh": "homologacao_2025",
+      "vigencia_inicio": "2025-04-01",
+      "vigencia_fim": "2026-03-31",
+      "postos": {
+        "Ponta": {
+          "TUSD_kwh": 1.29459,
+          "TE_kwh": 0.44454,
+          "TUSD_kw": 15.93
+        },
+        "ForaPonta": {
+          "TUSD_kwh": 0.11447,
+          "TE_kwh": 0.27119
+        }
+      }
+    },
+    {
+      "reh": "homologacao_2026",
+      "vigencia_inicio": "2026-04-01",
+      "vigencia_fim": "2027-03-31",
+      "postos": {
+        "Ponta": {
+          "TUSD_kwh": 1.35157,
+          "TE_kwh": 0.43188,
+          "TUSD_kw": 16.53
+        },
+        "ForaPonta": {
+          "TUSD_kwh": 0.16416,
+          "TE_kwh": 0.27282
+        }
+      }
+    }
+  ]
+}
