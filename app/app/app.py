@@ -693,4 +693,21 @@ A ferramenta extrai, audita e classifica cada item da fatura de forma automátic
 - Tese do Século — exclusão do ICMS da base PIS/COFINS (RE 574.706/STF)
 - ICMS calculado sobre a base correta
 - Bandeira tarifária proporcional aos dias em cada patamar
-- Fio B — Lei 14.300/2022 (pré-MM
+- Fio B — Lei 14.300/2022 (pré-MMGD isento, pós-MMGD escalonado)
+- Período de leitura dentro dos limites da REN 1.000/2021 (15–45 dias)
+- Cobranças retroativas (juros, multa, atualização monetária)
+- Divergência entre total da fatura e total a pagar
+- GD: compensação superior à energia injetada
+""")
+
+    st.divider()
+    st.markdown("#### REHs cadastradas")
+    st.markdown("""
+| REH | Vigência | TUSD (R$/kWh) | TE (R$/kWh) |
+|---|---|---|---|
+| 3409/2024 | 23/10/2024 – 22/10/2025 | 0,37008 | 0,32865 |
+| 3543/2025 | 23/10/2025 – 22/10/2026 | 0,39564 | 0,34405 |
+""")
+
+    st.divider()
+    st.caption("Minuto Energia · Gestão e Eficiência Energética · minutoenergia.com.br")
