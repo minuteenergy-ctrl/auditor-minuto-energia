@@ -477,7 +477,8 @@ with tab2:
                 zf.write(run["master_path"], Path(run["master_path"]).name)
                 for r in resultados:
                     p = r["excel_individual_path"]
-                    zf.write(p, Path(p).name)
+                    if p:
+                        zf.write(p, Path(p).name)
             buf.seek(0)
             st.download_button(
                 "📦 Baixar ZIP completo",
