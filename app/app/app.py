@@ -26,6 +26,14 @@ try:
 except ImportError:
     NEO_DISPONIVEL = False
 
+# CPFL Paulista — importação condicional
+try:
+    from cpfl_paulista.extractor import parse_fatura as paulista_parse
+    from cpfl_paulista.audit import auditar as paulista_auditar
+    PAULISTA_DISPONIVEL = True
+except ImportError:
+    PAULISTA_DISPONIVEL = False
+
 # ── Normalização para Excel-mestre unificado ─────────────────────────────────
 
 def _fmt_date(v):
@@ -79,6 +87,52 @@ def normalizar_neoenergia_pe(rec, triagem, motivos, metricas):
         "__dif_icms__":      metricas.get("dif_ICMS_R$"),
         "__dif_total__":     metricas.get("dif_total_R$"),
         "__dif_total_pct__": metricas.get("dif_total_%"),
+    }
+
+
+def normalizar_cpfl_paulista(rec, triagem, motivos, metricas):
+    return {
+        "arquivo":        rec.get("arquivo"),
+        "distribuidora":  "CPFL Paulista",
+        "layout":         "Verde-A4",
+        "ref_mes_ano":    rec.get("ref_mes_ano"),
+        "vencimento":     rec.get("vencimento"),
+        "conta_uc":       rec.get("conta_contrato"),
+        "cliente_nome":   rec.get("cliente_nome"),
+        "subgrupo":       rec.get("subgrupo", "A4"),
+        "data_emissao":   rec.get("data_emissao"),
+        "nr_nota_fiscal": rec.get("nr_nota_fiscal"),
+        "nr_medidor":     rec.get("nr_medidor"),
+        "consumo_kwh":    (rec.get("consumo_ponta_kwh") or 0) + (rec.get("consumo_fp_kwh") or 0),
+        "nr_dias":        rec.get("nr_dias"),
+        "leitura_anterior": None,
+        "leitura_atual":    None,
+        "preco_tusd":     rec.get("tusd_fp_sem"),
+        "valor_tusd":     (rec.get("valor_tusd_ponta") or 0) + (rec.get("valor_tusd_fp") or 0),
+        "preco_te":       rec.get("te_fp_sem"),
+        "valor_te":       (rec.get("valor_te_ponta") or 0) + (rec.get("valor_te_fp") or 0),
+        "tarifa_tusd_sem": rec.get("tusd_fp_sem"),
+        "tarifa_te_sem":   rec.get("te_fp_sem"),
+        "bandeira":       rec.get("bandeira_cor"),
+        "valor_bandeira": rec.get("valor_bandeira"),
+        "cosip":          rec.get("cosip"),
+        "total_fatura":   rec.get("total_fatura"),
+        "icms_base":      rec.get("icms_base"),
+        "icms_aliq":      rec.get("icms_aliq"),
+        "icms_valor":     rec.get("icms_valor"),
+        "pis_aliq":       rec.get("pis_aliq"),
+        "pis_valor":      rec.get("pis_valor"),
+        "cofins_aliq":    rec.get("cofins_aliq"),
+        "cofins_valor":   rec.get("cofins_valor"),
+        "__triagem__":       triagem,
+        "__motivos__":       " | ".join(motivos) if motivos else "",
+        "__dif_tusd__":      None,
+        "__dif_te__":        None,
+        "__dif_band__":      None,
+        "__dif_leit__":      None,
+        "__dif_icms__":      None,
+        "__dif_total__":     metricas.get("dif_total_R$"),
+        "__dif_total_pct__": None,
     }
 
 
@@ -421,6 +475,44 @@ def processar_fatura_neo(pdf_path, run_dir):
     }
 
 
+def processar_fatura_paulista(pdf_path, run_dir):
+    pdf_path = Path(pdf_path)
+    r = paulista_parse(str(pdf_path))
+    triagem, motivos, metricas = paulista_auditar(r)
+
+    registro = normalizar_cpfl_paulista(r, triagem, motivos, metricas)
+
+    st_map = {"OK": "OK", "INVESTIGAR": "INVESTIGAR", "DIVERGENCIA": "ATENÇÃO"}
+    st = st_map.get(triagem, "OK")
+    alertas = (
+        [{"cat": "Auditoria", "descricao": m, "status": st} for m in motivos]
+        if motivos
+        else [{"cat": "Auditoria", "descricao": "Fatura conferida", "status": "OK"}]
+    )
+
+    dados = {
+        "cliente_nome":     r.get("cliente_nome", ""),
+        "uc":               r.get("conta_contrato", ""),
+        "subgrupo":         r.get("subgrupo", "A4"),
+        "leitura_anterior": None,
+        "leitura_atual":    None,
+        "dias_ciclo":       r.get("nr_dias"),
+        "total_fatura":     r.get("total_fatura"),
+        "total_a_pagar":    r.get("total_a_pagar"),
+        "mes_ref":          r.get("ref_mes_ano", ""),
+        "nota_fiscal":      r.get("nr_nota_fiscal", ""),
+    }
+
+    return {
+        "pdf_filename":          pdf_path.name,
+        "dados":                 dados,
+        "config":                {},
+        "audit_result":          {"alertas": alertas, "auditado": {"reh_aplicada": metricas.get("reh_aplicado", "")}},
+        "excel_individual_path": "",
+        "__registro__":          registro,
+    }
+
+
 def processar_fatura(pdf_path, config_default, run_dir):
     pdf_path = Path(pdf_path)
     dados = extract_fatura(str(pdf_path))
@@ -454,7 +546,7 @@ with st.sidebar:
     st.markdown("### Configuração do Lote")
     st.markdown("---")
 
-    opcoes_dist = ["CPFL Piratininga", "Neoenergia PE"]
+    opcoes_dist = ["CPFL Piratininga", "CPFL Paulista", "Neoenergia PE"]
     distribuidora = st.selectbox("Distribuidora", opcoes_dist)
 
     # Auto-limpar ao trocar distribuidora
@@ -531,6 +623,8 @@ with tab1:
                 try:
                     if distribuidora == "Neoenergia PE":
                         res = processar_fatura_neo(tmp_pdf, run_dir)
+                    elif distribuidora == "CPFL Paulista":
+                        res = processar_fatura_paulista(tmp_pdf, run_dir)
                     else:
                         res = processar_fatura(tmp_pdf, config_default, run_dir)
                     resultados.append(res)
@@ -626,7 +720,7 @@ with tab2:
                 "Distribuidora": reg.get("distribuidora", ""),
                 "Cliente":     (reg.get("cliente_nome") or reg.get("conta_uc") or "")[:30],
                 "UC":          reg.get("conta_uc", ""),
-                "Ref Mês/Ano": reg.get("ref_mes_ano", ""),
+                "Ref Mes/Ano": reg.get("ref_mes_ano", ""),
                 "Dias":        reg.get("nr_dias"),
                 "Total (R$)":  reg.get("total_fatura"),
                 "Triagem":     reg.get("__triagem__", ""),
@@ -706,8 +800,8 @@ A ferramenta extrai, audita e classifica cada item da fatura de forma automátic
 - Tese do Século — exclusão do ICMS da base PIS/COFINS (RE 574.706/STF)
 - ICMS calculado sobre a base correta
 - Bandeira tarifária proporcional aos dias em cada patamar
-- Fio B — Lei 14.300/2022 (pré-MMGD isento, pós-MMGD escalonado)
-- Período de leitura dentro dos limites da REN 1.000/2021 (15–45 dias)
+- Fio B — Lei 14.300/2022 (pre-MMGD isento, pos-MMGD escalonado)
+- Periodo de leitura dentro dos limites da REN 1.000/2021 (15-45 dias)
 - Cobranças retroativas (juros, multa, atualização monetária)
 - Divergência entre total da fatura e total a pagar
 - GD: compensação superior à energia injetada
@@ -724,3 +818,4 @@ A ferramenta extrai, audita e classifica cada item da fatura de forma automátic
 
     st.divider()
     st.caption("Minuto Energia · Gestão e Eficiência Energética · minutoenergia.com.br")
+.br")
