@@ -817,5 +817,5 @@ A ferramenta extrai, audita e classifica cada item da fatura de forma automátic
 """)
 
     st.divider()
-    st.caption("Minuto Energia - Gestão e Eficiência Energética - minutoenergia.com.br")
+   st.caption("Minuto Energia - Gestão e Eficiência Energética - minutoenergia.com.br")
 .br")
