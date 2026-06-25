@@ -16,7 +16,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from extractor import extract_fatura
 from audit import auditar_fatura, summary_alertas
 from excel_filler import preencher_template
-from master_excel import gerar_master
+from excel_mestre_core import gerar_excel_mestre
 
 # Neoenergia PE — importação condicional
 try:
@@ -25,6 +25,157 @@ try:
     NEO_DISPONIVEL = True
 except ImportError:
     NEO_DISPONIVEL = False
+
+# ── Normalização para Excel-mestre unificado ─────────────────────────────────
+
+def _fmt_date(v):
+    if v is None:
+        return None
+    if hasattr(v, "strftime"):
+        return v.strftime("%d/%m/%Y")
+    return str(v)
+
+
+def normalizar_neoenergia_pe(rec, triagem, motivos, metricas):
+    return {
+        "arquivo":        rec.get("arquivo"),
+        "distribuidora":  "Neoenergia PE",
+        "layout":         rec.get("layout"),
+        "ref_mes_ano":    rec.get("ref_mes_ano"),
+        "vencimento":     rec.get("vencimento"),
+        "conta_uc":       rec.get("conta_contrato"),
+        "cliente_nome":   None,
+        "subgrupo":       "B3",
+        "data_emissao":   rec.get("data_emissao"),
+        "nr_nota_fiscal": rec.get("nr_nota_fiscal"),
+        "nr_medidor":     rec.get("nr_medidor"),
+        "consumo_kwh":    rec.get("consumo_kwh_tusd_qtd"),
+        "nr_dias":        rec.get("nr_dias"),
+        "leitura_anterior": rec.get("leitura_anterior"),
+        "leitura_atual":    rec.get("leitura_atual"),
+        "preco_tusd":     rec.get("preco_tusd"),
+        "valor_tusd":     rec.get("valor_tusd"),
+        "preco_te":       rec.get("preco_te"),
+        "valor_te":       rec.get("valor_te"),
+        "tarifa_tusd_sem": rec.get("tarifa_tusd_sem_trib"),
+        "tarifa_te_sem":   rec.get("tarifa_te_sem_trib"),
+        "bandeira":       rec.get("bandeira_cor"),
+        "valor_bandeira": rec.get("valor_bandeira"),
+        "cosip":          rec.get("cosip"),
+        "total_fatura":   rec.get("total_fatura"),
+        "icms_base":      rec.get("icms_base"),
+        "icms_aliq":      rec.get("icms_aliq"),
+        "icms_valor":     rec.get("icms_valor"),
+        "pis_aliq":       rec.get("pis_aliq"),
+        "pis_valor":      rec.get("pis_valor"),
+        "cofins_aliq":    rec.get("cofins_aliq"),
+        "cofins_valor":   rec.get("cofins_valor"),
+        "__triagem__":       triagem,
+        "__motivos__":       " | ".join(motivos) if motivos else "",
+        "__dif_tusd__":      metricas.get("dif_TUSD_R$"),
+        "__dif_te__":        metricas.get("dif_TE_R$"),
+        "__dif_band__":      None,
+        "__dif_leit__":      metricas.get("dif_leit_kWh"),
+        "__dif_icms__":      metricas.get("dif_ICMS_R$"),
+        "__dif_total__":     metricas.get("dif_total_R$"),
+        "__dif_total_pct__": metricas.get("dif_total_%"),
+    }
+
+
+def _triagem_cpfl(alertas):
+    cats_criticas = {"Tarifa TUSD", "Tarifa TE", "Bandeira"}
+    flags_div, flags_inv = [], []
+    for a in alertas:
+        st  = a.get("status", "OK")
+        cat = a.get("cat", "")
+        if st == "INVESTIGAR":
+            if cat in cats_criticas:
+                dif = abs(a.get("diferenca") or 0)
+                if dif >= 1.0:
+                    flags_div.append("[" + cat + "] " + a.get("descricao", ""))
+                else:
+                    flags_inv.append("[" + cat + "] " + a.get("descricao", ""))
+            else:
+                flags_inv.append("[" + cat + "] " + a.get("descricao", ""))
+        elif st in ("ATENCAO", "ATENÇÃO"):
+            flags_inv.append("[" + cat + "] " + a.get("descricao", ""))
+    if flags_div:
+        return "DIVERGENCIA", flags_div + flags_inv
+    if flags_inv:
+        return "INVESTIGAR", flags_inv
+    return "OK", []
+
+
+def normalizar_cpfl(dados, audit_result, pdf_filename):
+    alertas  = audit_result.get("alertas", [])
+    auditado = audit_result.get("auditado", {})
+    itens    = dados.get("itens", [])
+    trib     = dados.get("tributos", {})
+    triagem, motivos = _triagem_cpfl(alertas)
+    tusd_item = next((i for i in itens if i.get("tipo") == "consumo_tusd"), {})
+    te_item   = next((i for i in itens if i.get("tipo") == "consumo_te"), {})
+    band_val  = sum(i.get("valor") or 0 for i in itens if i.get("tipo") == "bandeira")
+    medidor   = (dados.get("medidores") or [{}])[0]
+
+    def _dif_cat(cat):
+        a = next((x for x in alertas if x.get("cat") == cat), None)
+        return a.get("diferenca") if a else None
+
+    consumo      = dados.get("consumo_faturado") or 0
+    dif_tusd_tar = _dif_cat("Tarifa TUSD")
+    dif_te_tar   = _dif_cat("Tarifa TE")
+    dif_tusd_rs  = round(dif_tusd_tar * consumo, 2) if dif_tusd_tar and consumo else None
+    dif_te_rs    = round(dif_te_tar * consumo, 2) if dif_te_tar and consumo else None
+    dif_band_rs  = _dif_cat("Bandeira")
+    dif_leit     = next((a.get("diferenca") for a in alertas if a.get("cat") == "Consumo Medidor"), None)
+    dif_total_rs = _dif_cat("Total a Pagar")
+    total_fat    = dados.get("total_fatura") or 0
+    dif_total_pct = round(abs(dif_total_rs) / total_fat * 100, 1) if dif_total_rs and total_fat else None
+
+    return {
+        "arquivo":        pdf_filename,
+        "distribuidora":  "CPFL Piratininga",
+        "layout":         dados.get("_formato"),
+        "ref_mes_ano":    dados.get("mes_ref"),
+        "vencimento":     _fmt_date(dados.get("data_vencimento")),
+        "conta_uc":       dados.get("conta_contrato") or dados.get("uc"),
+        "cliente_nome":   dados.get("cliente_nome"),
+        "subgrupo":       dados.get("subgrupo"),
+        "data_emissao":   _fmt_date(dados.get("data_emissao")),
+        "nr_nota_fiscal": dados.get("nota_fiscal"),
+        "nr_medidor":     medidor.get("numero") or dados.get("uc"),
+        "consumo_kwh":    consumo,
+        "nr_dias":        dados.get("dias_ciclo"),
+        "leitura_anterior": medidor.get("leitura_anterior"),
+        "leitura_atual":    medidor.get("leitura_atual"),
+        "preco_tusd":     tusd_item.get("preco_unit_com_trib"),
+        "valor_tusd":     tusd_item.get("valor"),
+        "preco_te":       te_item.get("preco_unit_com_trib"),
+        "valor_te":       te_item.get("valor"),
+        "tarifa_tusd_sem": auditado.get("tusd_sem_trib"),
+        "tarifa_te_sem":   auditado.get("te_sem_trib"),
+        "bandeira":       dados.get("bandeira_vigente"),
+        "valor_bandeira": band_val or None,
+        "cosip":          None,
+        "total_fatura":   total_fat,
+        "icms_base":      trib.get("icms", {}).get("base"),
+        "icms_aliq":      trib.get("icms", {}).get("aliquota_pct"),
+        "icms_valor":     trib.get("icms", {}).get("valor"),
+        "pis_aliq":       trib.get("pis", {}).get("aliquota_pct"),
+        "pis_valor":      trib.get("pis", {}).get("valor"),
+        "cofins_aliq":    trib.get("cofins", {}).get("aliquota_pct"),
+        "cofins_valor":   trib.get("cofins", {}).get("valor"),
+        "__triagem__":       triagem,
+        "__motivos__":       " | ".join(motivos) if motivos else "",
+        "__dif_tusd__":      dif_tusd_rs,
+        "__dif_te__":        dif_te_rs,
+        "__dif_band__":      dif_band_rs,
+        "__dif_leit__":      dif_leit,
+        "__dif_icms__":      None,
+        "__dif_total__":     dif_total_rs,
+        "__dif_total_pct__": dif_total_pct,
+    }
+
 
 APP_DIR = Path(__file__).parent
 ROOT = APP_DIR.parent
@@ -220,34 +371,40 @@ def processar_fatura_neo(pdf_path, run_dir):
     r = neo_parse(str(pdf_path))
     triagem, motivos, metricas = neo_auditar(r)
 
-    # Converte para formato compatível com a UI
-    status_map = {"OK": "OK", "INVESTIGAR": "INVESTIGAR", "DIVERGENCIA": "ATENÇÃO"}
-    status = status_map.get(triagem, "OK")
+    # Registro normalizado para Excel-mestre
+    r_norm = dict(r)
+    r_norm["arquivo"] = pdf_path.name
+    registro = normalizar_neoenergia_pe(r_norm, triagem, motivos, metricas)
 
-    if motivos:
-        alertas = [{"cat": "Auditoria", "descricao": m, "status": status} for m in motivos]
-    else:
-        alertas = [{"cat": "Auditoria", "descricao": "Fatura conferida", "status": "OK"}]
+    # Formato compatível com UI (alertas por item)
+    st_map = {"OK": "OK", "INVESTIGAR": "INVESTIGAR", "DIVERGENCIA": "ATENÇÃO"}
+    st = st_map.get(triagem, "OK")
+    alertas = (
+        [{"cat": "Auditoria", "descricao": m, "status": st} for m in motivos]
+        if motivos
+        else [{"cat": "Auditoria", "descricao": "Fatura conferida", "status": "OK"}]
+    )
 
     dados = {
-        "cliente_nome":    r.get("conta_contrato", ""),
-        "uc":              r.get("conta_contrato", ""),
-        "subgrupo":        "B3",
+        "cliente_nome":     r.get("conta_contrato", ""),
+        "uc":               r.get("conta_contrato", ""),
+        "subgrupo":         "B3",
         "leitura_anterior": None,
-        "leitura_atual":   None,
-        "dias_ciclo":      r.get("nr_dias"),
-        "total_fatura":    r.get("total_fatura"),
-        "total_a_pagar":   r.get("total_fatura"),
-        "mes_ref":         r.get("ref_mes_ano", ""),
-        "nota_fiscal":     r.get("nr_nota_fiscal", ""),
+        "leitura_atual":    None,
+        "dias_ciclo":       r.get("nr_dias"),
+        "total_fatura":     r.get("total_fatura"),
+        "total_a_pagar":    r.get("total_fatura"),
+        "mes_ref":          r.get("ref_mes_ano", ""),
+        "nota_fiscal":      r.get("nr_nota_fiscal", ""),
     }
 
     return {
-        "pdf_filename": pdf_path.name,
-        "dados": dados,
-        "config": {},
-        "audit_result": {"alertas": alertas, "auditado": {"reh_aplicada": ""}},
+        "pdf_filename":        pdf_path.name,
+        "dados":               dados,
+        "config":              {},
+        "audit_result":        {"alertas": alertas, "auditado": {"reh_aplicada": ""}},
         "excel_individual_path": "",
+        "__registro__":        registro,
     }
 
 
@@ -268,12 +425,15 @@ def processar_fatura(pdf_path, config_default, run_dir):
     out_xlsx = run_dir / f"Auditoria_{uc}_{mes}_NF{nf}.xlsx"
     preencher_template(dados, config, audit_result, out_xlsx)
 
+    registro = normalizar_cpfl(dados, audit_result, pdf_path.name)
+
     return {
-        "pdf_filename": pdf_path.name,
-        "dados": dados,
-        "config": config,
-        "audit_result": audit_result,
+        "pdf_filename":        pdf_path.name,
+        "dados":               dados,
+        "config":              config,
+        "audit_result":        audit_result,
         "excel_individual_path": str(out_xlsx),
+        "__registro__":        registro,
     }
 
 
@@ -353,7 +513,8 @@ with tab1:
 
             status.markdown("📊 Consolidando resultados...")
             master_path = run_dir / f"MASTER_Auditoria_{run_id}.xlsx"
-            gerar_master(resultados, master_path)
+            registros_norm = [r["__registro__"] for r in resultados]
+            gerar_excel_mestre(registros_norm, master_path)
 
             status.markdown(f"✅ **Auditoria conferida!** {len(resultados)} fatura(s) processada(s).")
 
@@ -391,10 +552,10 @@ with tab2:
         run = st.session_state["last_run"]
         resultados = run["resultados"]
 
-        total_ok   = sum(summary_alertas(r["audit_result"]["alertas"])["OK"] for r in resultados)
-        total_aten = sum(summary_alertas(r["audit_result"]["alertas"])["ATENÇÃO"] for r in resultados)
-        total_inv  = sum(summary_alertas(r["audit_result"]["alertas"])["INVESTIGAR"] for r in resultados)
-        total_valor = sum(r["dados"].get("total_fatura") or 0 for r in resultados)
+        total_ok   = sum(1 for r in resultados if r["__registro__"]["__triagem__"] == "OK")
+        total_inv  = sum(1 for r in resultados if r["__registro__"]["__triagem__"] == "INVESTIGAR")
+        total_div  = sum(1 for r in resultados if r["__registro__"]["__triagem__"] == "DIVERGENCIA")
+        total_valor = sum(r["__registro__"].get("total_fatura") or 0 for r in resultados)
         valor_fmt = f"R$ {total_valor:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
 
         # Métricas
@@ -412,12 +573,12 @@ with tab2:
         c3.markdown(f"""
         <div class="me-metric inv">
             <div class="val">{total_inv}</div>
-            <div class="lbl">Para investigação</div>
+            <div class="lbl">Investigar</div>
         </div>""", unsafe_allow_html=True)
         c4.markdown(f"""
         <div class="me-metric div">
-            <div class="val">{total_aten}</div>
-            <div class="lbl">Atenção necessária</div>
+            <div class="val">{total_div}</div>
+            <div class="lbl">Divergência</div>
         </div>""", unsafe_allow_html=True)
 
         st.markdown(f"""
@@ -432,26 +593,16 @@ with tab2:
         # Tabela resumo
         rows = []
         for r in resultados:
-            d = r["dados"]
-            counts = summary_alertas(r["audit_result"]["alertas"])
-            n_inv = counts["INVESTIGAR"]
-            n_at  = counts["ATENÇÃO"]
-            if n_inv > 0:
-                status_html = f'<span class="badge badge-inv">INVESTIGAR ({n_inv})</span>'
-            elif n_at > 0:
-                status_html = f'<span class="badge badge-div">ATENÇÃO ({n_at})</span>'
-            else:
-                status_html = '<span class="badge badge-ok">CONFERIDO</span>'
+            reg = r["__registro__"]
             rows.append({
-                "Arquivo": r["pdf_filename"],
-                "Cliente": (d.get("cliente_nome", "") or "")[:30],
-                "UC": d.get("uc", ""),
-                "Período": f"{d.get('mes_ref', '')}",
-                "Dias": d.get("dias_ciclo", ""),
-                "Total (R$)": d.get("total_fatura"),
-                "Conferidos": counts["OK"],
-                "Investigar": counts["INVESTIGAR"],
-                "Atenção": counts["ATENÇÃO"],
+                "Arquivo":     reg.get("arquivo", r["pdf_filename"]),
+                "Distribuidora": reg.get("distribuidora", ""),
+                "Cliente":     (reg.get("cliente_nome") or reg.get("conta_uc") or "")[:30],
+                "UC":          reg.get("conta_uc", ""),
+                "Ref Mês/Ano": reg.get("ref_mes_ano", ""),
+                "Dias":        reg.get("nr_dias"),
+                "Total (R$)":  reg.get("total_fatura"),
+                "Triagem":     reg.get("__triagem__", ""),
             })
         df = pd.DataFrame(rows)
         st.dataframe(df, use_container_width=True, hide_index=True)
@@ -492,18 +643,20 @@ with tab2:
         # Alertas por fatura
         st.markdown("#### Detalhamento por fatura")
         for r in resultados:
-            d = r["dados"]
-            counts = summary_alertas(r["audit_result"]["alertas"])
-            label = f"{r['pdf_filename']} · {(d.get('cliente_nome','') or '')[:30]} · UC {d.get('uc', '')}"
-            badge = ""
-            if counts["ATENÇÃO"] > 0:
-                badge += f" ⚠️ {counts['ATENÇÃO']}"
-            if counts["INVESTIGAR"] > 0:
-                badge += f" 🔍 {counts['INVESTIGAR']}"
+            reg    = r["__registro__"]
+            triagem = reg.get("__triagem__", "OK")
+            motivos_str = reg.get("__motivos__", "")
+            uc_label = reg.get("conta_uc") or r["dados"].get("uc", "")
+            cliente_label = (reg.get("cliente_nome") or r["dados"].get("cliente_nome") or "")[:30]
+            label = f"{r['pdf_filename']} · {cliente_label} · UC {uc_label}"
+            badge = {"INVESTIGAR": " 🔍", "DIVERGENCIA": " ⚠️"}.get(triagem, " ✅")
             with st.expander(label + badge):
-                for a in r["audit_result"]["alertas"]:
-                    icon = {"OK": "✅", "ATENÇÃO": "⚠️", "INVESTIGAR": "🔍"}.get(a["status"], "❓")
-                    st.markdown(f"{icon} **[{a['cat']}]** {a['descricao']}")
+                icon = {"OK": "✅", "INVESTIGAR": "🔍", "DIVERGENCIA": "⚠️"}.get(triagem, "❓")
+                if motivos_str:
+                    for m in motivos_str.split(" | "):
+                        st.markdown(f"{icon} {m}")
+                else:
+                    st.markdown("✅ Fatura conferida — sem divergências")
 
 
 # ── Tab 3: Sobre ──────────────────────────────────────────────────────────────
