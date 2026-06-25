@@ -444,6 +444,12 @@ with st.sidebar:
     opcoes_dist = ["CPFL Piratininga", "Neoenergia PE"]
     distribuidora = st.selectbox("Distribuidora", opcoes_dist)
 
+    # Auto-limpar ao trocar distribuidora
+    if st.session_state.get("_dist_anterior") != distribuidora:
+        st.session_state["_dist_anterior"] = distribuidora
+        st.session_state.pop("last_run", None)
+        st.session_state["_uploader_key"] = st.session_state.get("_uploader_key", 0) + 1
+
     st.markdown("---")
     data_adesao = st.date_input(
         "Data de adesão MMGD",
@@ -472,11 +478,13 @@ with tab1:
     st.markdown("#### Selecione as faturas em PDF")
     st.caption("Formatos aceitos: faturas em PDF")
 
+    _ukey = st.session_state.get("_uploader_key", 0)
     uploaded = st.file_uploader(
         "Arraste os PDFs aqui ou clique para selecionar",
         type=["pdf"],
         accept_multiple_files=True,
         label_visibility="collapsed",
+        key=f"uploader_{_ukey}",
     )
 
     if uploaded:
@@ -486,7 +494,13 @@ with tab1:
             cols[i % 3].markdown(f"📄 {u.name} · {u.size // 1024} KB")
 
         st.markdown("")
-        if st.button(f"Processar {len(uploaded)} fatura(s)", type="primary"):
+        col_btn1, col_btn2 = st.columns([3, 1])
+        processar = col_btn1.button(f"Processar {len(uploaded)} fatura(s)", type="primary")
+        if col_btn2.button("🗑️ Limpar"):
+            st.session_state.pop("last_run", None)
+            st.session_state["_uploader_key"] = _ukey + 1
+            st.rerun()
+        if processar:
             run_id = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
             run_dir = OUTPUT_DIR / f"run_{run_id}"
             run_dir.mkdir(parents=True, exist_ok=True)
@@ -679,21 +693,4 @@ A ferramenta extrai, audita e classifica cada item da fatura de forma automátic
 - Tese do Século — exclusão do ICMS da base PIS/COFINS (RE 574.706/STF)
 - ICMS calculado sobre a base correta
 - Bandeira tarifária proporcional aos dias em cada patamar
-- Fio B — Lei 14.300/2022 (pré-MMGD isento, pós-MMGD escalonado)
-- Período de leitura dentro dos limites da REN 1.000/2021 (15–45 dias)
-- Cobranças retroativas (juros, multa, atualização monetária)
-- Divergência entre total da fatura e total a pagar
-- GD: compensação superior à energia injetada
-""")
-
-    st.divider()
-    st.markdown("#### REHs cadastradas")
-    st.markdown("""
-| REH | Vigência | TUSD (R$/kWh) | TE (R$/kWh) |
-|---|---|---|---|
-| 3409/2024 | 23/10/2024 – 22/10/2025 | 0,37008 | 0,32865 |
-| 3543/2025 | 23/10/2025 – 22/10/2026 | 0,39564 | 0,34405 |
-""")
-
-    st.divider()
-    st.caption("Minuto Energia · Gestão e Eficiência Energética · minutoenergia.com.br")
+- Fio B — Lei 14.300/2022 (pré-MM
