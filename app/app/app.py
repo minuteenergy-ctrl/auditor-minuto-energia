@@ -347,6 +347,19 @@ hr { border-color: #E5EBE0; }
 .stDownloadButton > button:hover {
     background-color: #4a8a2e;
 }
+
+/* Botão Limpar — fundo escuro, texto amarelo-verde */
+button[data-testid="stBaseButton-secondary"] {
+    background-color: #0A2540 !important;
+    color: #C8E04A !important;
+    border: none !important;
+    font-weight: 700 !important;
+}
+button[data-testid="stBaseButton-secondary"]:hover {
+    background-color: #0d2f50 !important;
+    color: #C8E04A !important;
+    opacity: 0.9;
+}
 </style>
 """, unsafe_allow_html=True)
 
