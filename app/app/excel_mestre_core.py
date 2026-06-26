@@ -92,6 +92,50 @@ COLS = [
 ]
 
 
+# ── Colunas extras — modelo MT (media tensao com demanda) ────────────────────
+COLS_MT_EXTRA = [
+    # Faturado MT
+    ("Consumo Pta kWh Fat",    "consumo_ponta_kwh",      FMT_KWH,   16),
+    ("Consumo FP kWh Fat",     "consumo_fp_kwh",         FMT_KWH,   14),
+    ("Demanda Cont kW",        "demanda_contratada_kw",  "#,##0.0", 14),
+    ("Demanda Med kW",         "demanda_medida_kw",      "#,##0.0", 13),
+    ("Demanda Ultrap kW",      "demanda_ultrap_kw",      "#,##0.0", 13),
+    ("Taxa Perda",             "taxa_perda",             FMT_TEXT,   9),
+    # kWh Ponta
+    ("kWh Pta L.Ant",          "med_kwh_ponta_lant",     "#,##0",   11),
+    ("kWh Pta L.Atu",          "med_kwh_ponta_latu",     "#,##0",   11),
+    ("kWh Pta Mult",           "med_kwh_ponta_mult",     "0.00000",  9),
+    ("kWh Pta Medido",         "med_kwh_ponta_cons",     FMT_KWH,   13),
+    # kWh Fora Ponta
+    ("kWh FP L.Ant",           "med_kwh_fp_lant",        "#,##0",   11),
+    ("kWh FP L.Atu",           "med_kwh_fp_latu",        "#,##0",   11),
+    ("kWh FP Mult",            "med_kwh_fp_mult",        "0.00000",  9),
+    ("kWh FP Medido",          "med_kwh_fp_cons",        FMT_KWH,   13),
+    # kW Ponta
+    ("kW Pta L.Ant",           "med_kw_ponta_lant",      "#,##0",   10),
+    ("kW Pta L.Atu",           "med_kw_ponta_latu",      "#,##0",   10),
+    ("kW Pta Mult",            "med_kw_ponta_mult",      "0.00000",  9),
+    ("kW Pta Medido",          "med_kw_ponta_cons",      "#,##0.0", 12),
+    # kW Fora Ponta
+    ("kW FP L.Ant",            "med_kw_fp_lant",         "#,##0",   10),
+    ("kW FP L.Atu",            "med_kw_fp_latu",         "#,##0",   10),
+    ("kW FP Mult",             "med_kw_fp_mult",         "0.00000",  9),
+    ("kW FP Medido",           "med_kw_fp_cons",         "#,##0.0", 12),
+    # kVarh Ponta
+    ("kVarh Pta L.Ant",        "med_kvarh_ponta_lant",   "#,##0",   12),
+    ("kVarh Pta L.Atu",        "med_kvarh_ponta_latu",   "#,##0",   12),
+    ("kVarh Pta Mult",         "med_kvarh_ponta_mult",   "0.00000", 10),
+    ("kVarh Pta Medido",       "med_kvarh_ponta_cons",   FMT_KWH,   13),
+    # kVarh Fora Ponta
+    ("kVarh FP L.Ant",         "med_kvarh_fp_lant",      "#,##0",   11),
+    ("kVarh FP L.Atu",         "med_kvarh_fp_latu",      "#,##0",   11),
+    ("kVarh FP Mult",          "med_kvarh_fp_mult",      "0.00000", 10),
+    ("kVarh FP Medido",        "med_kvarh_fp_cons",      FMT_KWH,   13),
+]
+
+COLS_MT = COLS + COLS_MT_EXTRA
+
+
 def _bg_triagem(t):
     return COR["div_bg"] if t == "DIVERGENCIA" else COR["inv_bg"] if t == "INVESTIGAR" else COR["ok_bg"]
 
@@ -99,8 +143,8 @@ def _fg_triagem(t):
     return COR["triagem_div"] if t == "DIVERGENCIA" else COR["triagem_inv"] if t == "INVESTIGAR" else COR["triagem_ok"]
 
 
-def _escrever_cabecalho(ws):
-    for ci, (cab, *_) in enumerate(COLS, 1):
+def _escrever_cabecalho(ws, cols):
+    for ci, (cab, *_) in enumerate(cols, 1):
         c = ws.cell(row=1, column=ci, value=cab)
         c.font      = _font(bold=True, color=COR["header_fg"], size=9)
         c.fill      = _fill(COR["header_bg"])
@@ -110,13 +154,15 @@ def _escrever_cabecalho(ws):
     ws.row_dimensions[1].height = 22
 
 
-def _escrever_linha(ws, row_num, rec, alt=False):
+def _escrever_linha(ws, row_num, rec, alt=False, cols=None):
+    if cols is None:
+        cols = COLS
     triagem = rec.get("__triagem__", "OK")
     bg_row  = COR["alt_bg"] if alt else COR["branco"]
     bg_tri  = _bg_triagem(triagem)
     fg_tri  = _fg_triagem(triagem)
 
-    for ci, (_, key, fmt, _) in enumerate(COLS, 1):
+    for ci, (_, key, fmt, _) in enumerate(cols, 1):
         val  = rec.get(key)
         cell = ws.cell(row=row_num, column=ci, value=val)
         cell.border    = _border()
@@ -138,22 +184,24 @@ def _escrever_linha(ws, row_num, rec, alt=False):
             cell.number_format = fmt
 
 
-def _ajustar_colunas(ws):
-    for ci, (_, _, _, w) in enumerate(COLS, 1):
+def _ajustar_colunas(ws, cols):
+    for ci, (_, _, _, w) in enumerate(cols, 1):
         ws.column_dimensions[get_column_letter(ci)].width = w
     for ri in range(2, ws.max_row + 1):
         ws.row_dimensions[ri].height = 16
 
 
-def _aba_dados(wb, nome, registros, cor_tab=None):
+def _aba_dados(wb, nome, registros, cor_tab=None, cols=None):
+    if cols is None:
+        cols = COLS
     ws = wb.create_sheet(nome)
     if cor_tab:
         ws.sheet_properties.tabColor = cor_tab
-    _escrever_cabecalho(ws)
+    _escrever_cabecalho(ws, cols)
     for i, rec in enumerate(registros):
-        _escrever_linha(ws, i + 2, rec, alt=(i % 2 == 1))
-    _ajustar_colunas(ws)
-    ws.auto_filter.ref = f"A1:{get_column_letter(len(COLS))}1"
+        _escrever_linha(ws, i + 2, rec, alt=(i % 2 == 1), cols=cols)
+    _ajustar_colunas(ws, cols)
+    ws.auto_filter.ref = f"A1:{get_column_letter(len(cols))}1"
     return ws
 
 
@@ -216,12 +264,19 @@ def _aba_resumo(wb, meta, contagens, totais):
     return ws
 
 
-def gerar_excel_mestre(registros, output_path):
+def gerar_excel_mestre(registros, output_path, modelo=None):
     """
     Gera o Excel-mestre unificado.
-    registros: lista de dicts com schema padrao (ver COLS acima).
+    registros : lista de dicts com schema padrao (ver COLS acima).
     output_path: caminho do arquivo .xlsx a salvar.
+    modelo    : "BT" | "MT" | None (auto-detecta pelo subgrupo).
+                Subgrupos A*, A3, A4, A3a etc. → MT (colunas de leitura por posto).
     """
+    if modelo is None:
+        subgrupos = {r.get("subgrupo", "") for r in registros if r.get("subgrupo")}
+        modelo = "MT" if any(str(s).upper().startswith("A") for s in subgrupos) else "BT"
+    cols = COLS_MT if modelo == "MT" else COLS
+
     oks   = [r for r in registros if r.get("__triagem__") == "OK"]
     invs  = [r for r in registros if r.get("__triagem__") == "INVESTIGAR"]
     divs  = [r for r in registros if r.get("__triagem__") == "DIVERGENCIA"]
@@ -249,10 +304,10 @@ def gerar_excel_mestre(registros, output_path):
     wb.remove(wb.active)
 
     _aba_resumo(wb, meta, contagens, totais)
-    _aba_dados(wb, "MESTRE",      registros, cor_tab=COR["header_bg"])
-    _aba_dados(wb, "OK",          oks,       cor_tab=COR["tab_ok"])
-    _aba_dados(wb, "INVESTIGAR",  invs,      cor_tab=COR["tab_inv"])
-    _aba_dados(wb, "DIVERGENCIA", divs,      cor_tab=COR["tab_div"])
+    _aba_dados(wb, "MESTRE",      registros, cor_tab=COR["header_bg"], cols=cols)
+    _aba_dados(wb, "OK",          oks,       cor_tab=COR["tab_ok"],    cols=cols)
+    _aba_dados(wb, "INVESTIGAR",  invs,      cor_tab=COR["tab_inv"],   cols=cols)
+    _aba_dados(wb, "DIVERGENCIA", divs,      cor_tab=COR["tab_div"],   cols=cols)
 
     from pathlib import Path
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
