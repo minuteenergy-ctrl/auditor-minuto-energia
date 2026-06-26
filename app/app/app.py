@@ -133,6 +133,43 @@ def normalizar_cpfl_paulista(rec, triagem, motivos, metricas):
         "__dif_icms__":      None,
         "__dif_total__":     metricas.get("dif_total_R$"),
         "__dif_total_pct__": None,
+        # ── Campos MT — leituras por posto ────────────────────────────────────
+        "consumo_ponta_kwh":    rec.get("consumo_ponta_kwh"),
+        "consumo_fp_kwh":       rec.get("consumo_fp_kwh"),
+        "demanda_contratada_kw": rec.get("demanda_contratada_kw"),
+        "demanda_medida_kw":    rec.get("demanda_medida_kw"),
+        "demanda_ultrap_kw":    rec.get("demanda_ultrap_kw"),
+        "taxa_perda":           "Sim" if rec.get("taxa_perda") else "Nao",
+        # kWh Ponta
+        "med_kwh_ponta_lant":   rec.get("med_kwh_ponta_lant"),
+        "med_kwh_ponta_latu":   rec.get("med_kwh_ponta_latu"),
+        "med_kwh_ponta_mult":   rec.get("med_kwh_ponta_mult"),
+        "med_kwh_ponta_cons":   rec.get("med_kwh_ponta_cons"),
+        # kWh Fora Ponta
+        "med_kwh_fp_lant":      rec.get("med_kwh_fp_lant"),
+        "med_kwh_fp_latu":      rec.get("med_kwh_fp_latu"),
+        "med_kwh_fp_mult":      rec.get("med_kwh_fp_mult"),
+        "med_kwh_fp_cons":      rec.get("med_kwh_fp_cons"),
+        # kW Ponta
+        "med_kw_ponta_lant":    rec.get("med_kw_ponta_lant"),
+        "med_kw_ponta_latu":    rec.get("med_kw_ponta_latu"),
+        "med_kw_ponta_mult":    rec.get("med_kw_ponta_mult"),
+        "med_kw_ponta_cons":    rec.get("med_kw_ponta_cons"),
+        # kW Fora Ponta
+        "med_kw_fp_lant":       rec.get("med_kw_fp_lant"),
+        "med_kw_fp_latu":       rec.get("med_kw_fp_latu"),
+        "med_kw_fp_mult":       rec.get("med_kw_fp_mult"),
+        "med_kw_fp_cons":       rec.get("med_kw_fp_cons"),
+        # kVarh Ponta
+        "med_kvarh_ponta_lant": rec.get("med_kvarh_ponta_lant"),
+        "med_kvarh_ponta_latu": rec.get("med_kvarh_ponta_latu"),
+        "med_kvarh_ponta_mult": rec.get("med_kvarh_ponta_mult"),
+        "med_kvarh_ponta_cons": rec.get("med_kvarh_ponta_cons"),
+        # kVarh Fora Ponta
+        "med_kvarh_fp_lant":    rec.get("med_kvarh_fp_lant"),
+        "med_kvarh_fp_latu":    rec.get("med_kvarh_fp_latu"),
+        "med_kvarh_fp_mult":    rec.get("med_kvarh_fp_mult"),
+        "med_kvarh_fp_cons":    rec.get("med_kvarh_fp_cons"),
     }
 
 
@@ -817,4 +854,4 @@ A ferramenta extrai, audita e classifica cada item da fatura de forma automátic
 """)
 
     st.divider()
-    st.caption("Minuto Energia - Gestão e Eficiência Energética - minutoenergia.com.br")
+    st.caption("Minuto Energia - Gestao e Eficiencia Energetica - minutoenergia.com.br")
