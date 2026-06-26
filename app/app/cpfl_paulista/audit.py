@@ -137,7 +137,36 @@ def auditar(r):
             "nivel": "DIVERGENCIA",
         })
 
-    # ── 6. GD — compensação TE FP ────────────────────────────────────────────
+    # ── 6. Leituras — consumo medido vs faturado ─────────────────────────────
+    taxa_perda = r.get("taxa_perda", False)
+    fator_perda = 1.025 if taxa_perda else 1.0
+    TOL_ABS = 2.0  # tolerância absoluta (arredondamento distribuidora)
+
+    leit_checks = [
+        ("kWh Ponta",    r.get("med_kwh_ponta_cons"),   r.get("consumo_ponta_kwh")),
+        ("kWh Fora Ponta", r.get("med_kwh_fp_cons"),    r.get("consumo_fp_kwh")),
+        ("kW Demanda",   r.get("med_kw_fp_cons"),        r.get("demanda_medida_kw")),
+        ("kVarh Ponta",  r.get("med_kvarh_ponta_cons"),  None),   # sem campo faturado direto ainda
+        ("kVarh Fora Ponta", r.get("med_kvarh_fp_cons"), None),
+    ]
+    for nome_leit, cons_med, fat in leit_checks:
+        if cons_med is None or fat is None:
+            continue
+        esperado = round(cons_med * fator_perda, 3)
+        dif = round(esperado - fat, 3)
+        if abs(dif) > TOL_ABS:
+            alertas.append({
+                "cat": "Leitura",
+                "descricao": (
+                    f"{nome_leit}: medido={cons_med:,.3f}"
+                    f"{'×1,025' if taxa_perda else ''} = {esperado:,.3f}"
+                    f" vs faturado {fat:,.4f} (dif {dif:+,.3f})"
+                ),
+                "nivel": "DIVERGENCIA",
+            })
+    metricas["taxa_perda"] = taxa_perda
+
+    # ── 8. GD — compensação TE FP ────────────────────────────────────────────
     inj_fp  = r.get("injetada_fp_kwh") or 0
     cons_fp = r.get("consumo_fp_kwh") or 0
     if inj_fp > 0 and inj_fp > cons_fp:

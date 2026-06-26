@@ -217,4 +217,40 @@ def parse_fatura(pdf_path):
     if m:
         r["total_a_pagar"] = _num(m.group(1))
 
+    # ── Taxa de perda técnica ─────────────────────────────────────────────────
+    r["taxa_perda"] = bool(re.search(r'Taxa de perda', text, re.IGNORECASE))
+
+    # ── Leituras do medidor ───────────────────────────────────────────────────
+    # Formato: [medidor] [Tipo] - [unidade] [Posto] [lant] [latu] [mult] [cons]
+    padrao_med = re.compile(
+        r'\d{8}\s+(Energia Ativa|Energia Reativa|Demanda Ativa)\s*-\s*'
+        r'(kWh|Kva|kVa|kVarh|kW)\s+(Ponta|Fora Ponta)'
+        r'\s+(\d+)\s+(\d+)\s+([\d,]+)\s+([\d\.]+)',
+        re.IGNORECASE
+    )
+    _MAP = {
+        ("energia ativa",  "kwh",  "ponta"):       "med_kwh_ponta",
+        ("energia ativa",  "kwh",  "fora ponta"):  "med_kwh_fp",
+        ("demanda ativa",  "kw",   "ponta"):        "med_kw_ponta",
+        ("demanda ativa",  "kw",   "fora ponta"):   "med_kw_fp",
+        ("energia reativa","kva",  "ponta"):        "med_kvarh_ponta",
+        ("energia reativa","kva",  "fora ponta"):   "med_kvarh_fp",
+        ("energia reativa","kvarh","ponta"):        "med_kvarh_ponta",
+        ("energia reativa","kvarh","fora ponta"):   "med_kvarh_fp",
+    }
+    for m in padrao_med.finditer(text):
+        tipo  = m.group(1).lower().strip()
+        unid  = m.group(2).lower().strip()
+        posto = m.group(3).lower().strip()
+        lant  = int(m.group(4))
+        latu  = int(m.group(5))
+        mult  = _num(m.group(6))
+        cons  = _num(m.group(7))
+        prefixo = _MAP.get((tipo, unid, posto))
+        if prefixo:
+            r[prefixo + "_lant"] = lant
+            r[prefixo + "_latu"] = latu
+            r[prefixo + "_mult"] = mult
+            r[prefixo + "_cons"] = cons
+
     return r
