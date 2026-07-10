@@ -897,7 +897,7 @@ with tab3:
         """, unsafe_allow_html=True)
 
         st.markdown(f"**{n_ucs} unidade(s) consumidora(s)**")
-        ucs_labels = sorted({r.get("conta_uc", "—") for r in registros_acum})
+        ucs_labels = sorted({str(r.get("conta_uc") or "—") for r in registros_acum})
         st.caption("  ·  ".join(ucs_labels))
 
         st.divider()
