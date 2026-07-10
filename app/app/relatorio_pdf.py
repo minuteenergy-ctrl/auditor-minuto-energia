@@ -82,7 +82,7 @@ def _chart_donut(tot_ok, tot_inv):
     fig, ax = plt.subplots(figsize=FSIZE, facecolor="white")
     vals   = [tot_ok, tot_inv]
     clrs   = [C_GREEN, C_BLUE]
-    labels = [f"OK ({tot_ok})", f"INVESTIGAR ({tot_inv})"]
+    labels = [f"OK ({tot_ok})", f"DIVERGENTE ({tot_inv})"]
     ax.pie(vals, colors=clrs, startangle=90,
            wedgeprops=dict(width=0.52, edgecolor="white", linewidth=2))
     ax.text(0, 0, f"{sum(vals)}\nFaturas", ha="center", va="center",
@@ -97,7 +97,7 @@ def _chart_donut(tot_ok, tot_inv):
 
 def _chart_barras(rs_ok, rs_inv):
     fig, ax = plt.subplots(figsize=FSIZE, facecolor="white")
-    cats = ["OK", "INVESTIGAR"]
+    cats = ["OK", "DIVERGENTE"]
     vals = [rs_ok, rs_inv]
     clrs = [C_GREEN, C_BLUE]
     x = np.arange(len(cats))
@@ -122,7 +122,7 @@ def _chart_ucbar(ucs_data):
     labels = [f"...{u[0][-4:]}" if len(u[0]) > 4 else u[0] for u in ucs_data]
     vals   = [u[1] for u in ucs_data]
     y = np.arange(len(labels))
-    ax.barh(y, vals, color=C_BLUE, height=0.52, label="INVESTIGAR")
+    ax.barh(y, vals, color=C_BLUE, height=0.52, label="DIVERGENTE")
     ax.set_yticks(y)
     ax.set_yticklabels(labels, fontsize=8.5)
     ax.set_xlabel("Nº de Faturas", fontsize=9)
@@ -401,7 +401,7 @@ def gerar_relatorio_pdf(cliente_nome, registros, parceiro_nome=""):
 
     kpis = [
         (str(TOT_OK),    "faturas OK",                 C_GREEN),
-        (str(TOT_PROB),  "faturas para Investigar",    C_BLUE),
+        (str(TOT_PROB),  "faturas Divergentes",         C_BLUE),
         (_brl(RS_PROB),  "em faturas com ocorrências", C_NAVY),
         (_brl(RS_GERAL), "valor total auditado",       C_GREEN),
     ]
@@ -459,7 +459,7 @@ def gerar_relatorio_pdf(cliente_nome, registros, parceiro_nome=""):
     story.append(Paragraph("Resultados por Unidade Consumidora", ST["section"]))
     story.append(HRFlowable(width="100%", thickness=1.5, color=LIME, spaceAfter=10))
 
-    uc_header = ["UC", "Período", "Faturas", "OK", "INVESTIGAR"]
+    uc_header = ["UC", "Período", "Faturas", "OK", "DIVERGENTE"]
     uc_rows   = [uc_header]
     for uc, per, fat, ok, inv, div, rs in UCS:
         uc_rows.append([uc, per, str(fat), str(ok), str(inv + div)])
