@@ -597,6 +597,14 @@ with st.sidebar:
     )
     st.session_state["cliente_nome"] = cliente_nome
 
+    parceiro_nome = st.text_input(
+        "Nome do parceiro (opcional)",
+        value=st.session_state.get("parceiro_nome", ""),
+        placeholder="Deixe em branco para relatório Minuto apenas",
+        label_visibility="visible",
+    )
+    st.session_state["parceiro_nome"] = parceiro_nome
+
     # Contador de registros acumulados
     n_acum = len(st.session_state.get("registros_acumulados", []))
     if n_acum > 0:
@@ -605,6 +613,7 @@ with st.sidebar:
         if st.button("🗑️ Nova análise", key="nova_analise"):
             st.session_state["registros_acumulados"] = []
             st.session_state["cliente_nome"] = ""
+            st.session_state["parceiro_nome"] = ""
             st.session_state.pop("last_run", None)
             st.session_state["_uploader_key"] = st.session_state.get("_uploader_key", 0) + 1
             st.rerun()
@@ -918,7 +927,8 @@ with tab3:
         if gerar and cliente_val:
             with st.spinner("Gerando relatório PDF..."):
                 try:
-                    pdf_bytes = gerar_relatorio_pdf(cliente_val, registros_acum)
+                    parceiro_val = st.session_state.get("parceiro_nome", "").strip()
+                    pdf_bytes = gerar_relatorio_pdf(cliente_val, registros_acum, parceiro_nome=parceiro_val)
                     nome_arquivo = re.sub(r"[^\w\d\-_]", "_", cliente_val)[:40]
                     st.success("✅ Relatório gerado com sucesso!")
                     st.download_button(
