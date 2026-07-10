@@ -143,8 +143,8 @@ def _draw_capa(c, cliente_nome, dist, periodo, n_ucs, data_rel, parceiro_nome=""
     c.rect(6 * mm, 0, PW - 6 * mm, 22 * mm, fill=1, stroke=0)
     if parceiro_nome:
         c.setFillColor(LIME)
-        c.setFont("Helvetica-Bold", 10)
-        c.drawString(22 * mm, PH - 28 * mm, parceiro_nome[:60])
+        c.setFont("Helvetica-Bold", 12)
+        c.drawString(22 * mm, PH - 28 * mm, parceiro_nome.upper()[:60])
         c.setFont("Helvetica-Bold", 12)
         c.drawString(22 * mm, PH - 40 * mm, "MINUTO ENERGIA")
         c.setFillColor(WHITE)
@@ -192,7 +192,7 @@ def _draw_contracapa(c, parceiro_nome=""):
     c.setFillColor(LIME)
     c.setFont("Helvetica-Bold", 12)
     if parceiro_nome:
-        c.drawCentredString(PW / 2, PH / 2 - 22 * mm, parceiro_nome[:60])
+        c.drawCentredString(PW / 2, PH / 2 - 22 * mm, parceiro_nome.upper()[:60])
         c.drawCentredString(PW / 2, PH / 2 - 36 * mm, "MINUTO ENERGIA")
     else:
         c.drawCentredString(PW / 2, PH / 2 - 22 * mm, "MINUTO ENERGIA")
@@ -226,7 +226,7 @@ class _RelatorioCanvas(canvas.Canvas):
         if self._parceiro_nome:
             self.setFillColor(LIME)
             self.setFont("Helvetica-Bold", 8)
-            self.drawString(12 * mm, PH - 7 * mm, self._parceiro_nome[:50])
+            self.drawString(12 * mm, PH - 7 * mm, self._parceiro_nome.upper()[:50])
             self.setFont("Helvetica-Bold", 8)
             self.drawString(12 * mm, PH - 13.5 * mm, "MINUTO ENERGIA  |  Auditoria de Faturas")
         else:
