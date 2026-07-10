@@ -15,7 +15,7 @@ from reportlab.lib import colors
 from reportlab.lib.units import mm
 from reportlab.platypus import (
     SimpleDocTemplate, Spacer, Image, Table, TableStyle,
-    Paragraph, HRFlowable, PageBreak,
+    Paragraph, HRFlowable, PageBreak, Flowable,
 )
 from reportlab.lib.styles import ParagraphStyle
 from reportlab.pdfgen import canvas
@@ -200,27 +200,38 @@ def _draw_contracapa(c, parceiro_nome=""):
     c.setFont("Helvetica", 9)
     c.drawCentredString(PW / 2, 9 * mm, "minutoenergia.com.br")
 
+
+class _TriggerContracapa(Flowable):
+    """Marcador zero-size: sinaliza ao canvas que esta página é a contracapa."""
+    width = 0
+    height = 0
+    def draw(self):
+        self.canv._contracapa_this_page = True
+
+
 class _RelatorioCanvas(canvas.Canvas):
     def __init__(self, filename, cliente_nome="", parceiro_nome="", **kwargs):
         super().__init__(filename, **kwargs)
-        self._page_num      = 0
-        self._cliente_nome  = cliente_nome
-        self._parceiro_nome = parceiro_nome
+        self._page_num             = 0
+        self._cliente_nome         = cliente_nome
+        self._parceiro_nome        = parceiro_nome
+        self._contracapa_this_page = False
 
     def showPage(self):
         self._page_num += 1
-        self._draw_deco(self._page_num)
+        if self._page_num == 1:
+            pass  # capa desenhada por _on_first_page
+        elif self._contracapa_this_page:
+            _draw_contracapa(self, self._parceiro_nome)
+            self._contracapa_this_page = False
+        else:
+            self._draw_header_footer(self._page_num)
         super().showPage()
 
     def save(self):
         super().save()
 
-    def _draw_deco(self, pn):
-        if pn == 1:
-            return
-        if pn == 6:
-            _draw_contracapa(self, self._parceiro_nome)
-            return
+    def _draw_header_footer(self, pn):
         self.setFillColor(NAVY)
         self.rect(0, PH - 18 * mm, PW, 18 * mm, fill=1, stroke=0)
         if self._parceiro_nome:
@@ -243,6 +254,7 @@ class _RelatorioCanvas(canvas.Canvas):
         self.drawString(12 * mm, 3 * mm,
                         "Minuto Energia — Gestão e Eficiência Energética — minutoenergia.com.br")
         self.drawRightString(PW - 12 * mm, 3 * mm, f"Pág. {pn - 1}")
+
 
 def _S(name, **kw):
     return ParagraphStyle(name, **kw)
@@ -400,10 +412,10 @@ def gerar_relatorio_pdf(cliente_nome, registros, parceiro_nome=""):
     story.append(HRFlowable(width="100%", thickness=1.5, color=LIME, spaceAfter=8))
 
     kpis = [
-        (str(TOT_OK),    "faturas OK",                 C_GREEN),
-        (str(TOT_PROB),  "faturas Divergentes",         C_BLUE),
+        (str(TOT_OK),    "faturas OK",          C_GREEN),
+        (str(TOT_PROB),  "faturas Divergentes",  C_BLUE),
         (_brl(RS_PROB),  "em faturas com ocorrências", C_NAVY),
-        (_brl(RS_GERAL), "valor total auditado",       C_GREEN),
+        (_brl(RS_GERAL), "valor total auditado", C_GREEN),
     ]
 
     def _kpi_cell(val, lbl, col):
@@ -455,7 +467,7 @@ def gerar_relatorio_pdf(cliente_nome, registros, parceiro_nome=""):
         ])))
     story.append(PageBreak())
 
-    # P4: Tabela por UC
+    # P4: Tabela por UC (pode ocupar múltiplas páginas com muitas UCs)
     story.append(Paragraph("Resultados por Unidade Consumidora", ST["section"]))
     story.append(HRFlowable(width="100%", thickness=1.5, color=LIME, spaceAfter=10))
 
@@ -532,7 +544,9 @@ def gerar_relatorio_pdf(cliente_nome, registros, parceiro_nome=""):
     story.append(Paragraph(OBS_PRAZOS, ST["obs"]))
     story.append(PageBreak())
 
-    # P6: Contracapa
+    # Última página: Contracapa
+    # _TriggerContracapa sinaliza ao canvas que esta página recebe a contracapa
+    story.append(_TriggerContracapa())
     story.append(Spacer(1, 1))
 
     # Build
