@@ -18,6 +18,13 @@ from audit import auditar_fatura, summary_alertas
 from excel_filler import preencher_template
 from excel_mestre_core import gerar_excel_mestre
 
+# Relatório PDF
+try:
+    from relatorio_pdf import gerar_relatorio_pdf
+    RELATORIO_PDF_DISPONIVEL = True
+except ImportError:
+    RELATORIO_PDF_DISPONIVEL = False
+
 # Neoenergia PE — importação condicional
 try:
     from neoenergia_pe.extractor import parse_fatura as neo_parse
@@ -580,6 +587,29 @@ def processar_fatura(pdf_path, config_default, run_dir):
 
 
 with st.sidebar:
+    # ── Nome do cliente (topo da sidebar) ────────────────────────────────────
+    st.markdown("### Cliente")
+    cliente_nome = st.text_input(
+        "Nome do cliente",
+        value=st.session_state.get("cliente_nome", ""),
+        placeholder="Digite o nome do cliente",
+        label_visibility="collapsed",
+    )
+    st.session_state["cliente_nome"] = cliente_nome
+
+    # Contador de registros acumulados
+    n_acum = len(st.session_state.get("registros_acumulados", []))
+    if n_acum > 0:
+        n_ucs_acum = len({r.get("conta_uc") for r in st.session_state["registros_acumulados"]})
+        st.caption(f"📂 {n_acum} faturas acumuladas · {n_ucs_acum} UC(s)")
+        if st.button("🗑️ Nova análise", key="nova_analise"):
+            st.session_state["registros_acumulados"] = []
+            st.session_state["cliente_nome"] = ""
+            st.session_state.pop("last_run", None)
+            st.session_state["_uploader_key"] = st.session_state.get("_uploader_key", 0) + 1
+            st.rerun()
+
+    st.markdown("---")
     st.markdown("### Configuração do Lote")
     st.markdown("---")
 
@@ -612,7 +642,7 @@ config_default = {
 
 
 # ── Tabs ──────────────────────────────────────────────────────────────────────
-tab1, tab2, tab3 = st.tabs(["📤 Processar faturas", "📊 Resultados", "ℹ️ Sobre"])
+tab1, tab2, tab3, tab4 = st.tabs(["📤 Processar faturas", "📊 Resultados", "📋 Relatório Final", "ℹ️ Sobre"])
 
 
 # ── Tab 1: Upload ─────────────────────────────────────────────────────────────
@@ -675,6 +705,13 @@ with tab1:
             gerar_excel_mestre(registros_norm, master_path)
 
             status.markdown(f"✅ **Auditoria conferida!** {len(resultados)} fatura(s) processada(s).")
+
+            # ── Acumular registros em session_state (deduplica por arquivo) ──
+            acumulados = st.session_state.get("registros_acumulados", [])
+            arquivos_existentes = {r.get("arquivo") for r in acumulados}
+            novos = [r["__registro__"] for r in resultados
+                     if r["__registro__"].get("arquivo") not in arquivos_existentes]
+            st.session_state["registros_acumulados"] = acumulados + novos
 
             st.session_state["last_run"] = {
                 "run_id": run_id,
@@ -817,8 +854,85 @@ with tab2:
                     st.markdown("✅ Fatura conferida — sem divergências")
 
 
-# ── Tab 3: Sobre ──────────────────────────────────────────────────────────────
+# ── Tab 3: Relatório Final ────────────────────────────────────────────────────
 with tab3:
+    registros_acum = st.session_state.get("registros_acumulados", [])
+
+    if not registros_acum:
+        st.markdown("""
+        <div style="text-align:center; padding: 60px 0; color: #5A6B7C;">
+            <div style="font-size:48px; margin-bottom:16px;">📋</div>
+            <div style="font-family:'Poppins',sans-serif; font-size:16px; font-weight:500; color:#0A2540;">
+                Nenhuma fatura acumulada ainda
+            </div>
+            <div style="font-size:13px; margin-top:8px;">
+                Processe lotes na aba <strong>Processar faturas</strong> e volte aqui quando concluir o envio.
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+    else:
+        n_fat   = len(registros_acum)
+        n_ucs   = len({r.get("conta_uc") for r in registros_acum})
+        n_ok    = sum(1 for r in registros_acum if r.get("__triagem__") == "OK")
+        n_inv   = sum(1 for r in registros_acum if r.get("__triagem__") == "INVESTIGAR")
+        n_div   = sum(1 for r in registros_acum if r.get("__triagem__") == "DIVERGENCIA")
+        val_tot = sum(r.get("total_fatura") or 0 for r in registros_acum)
+        val_fmt = f"R$ {val_tot:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+
+        nome_exibido = st.session_state.get("cliente_nome", "").strip() or "*(nome não informado)*"
+        st.markdown(f"**Cliente:** {nome_exibido}")
+        st.markdown("")
+
+        c1, c2, c3, c4 = st.columns(4)
+        c1.markdown(f'<div class="me-metric"><div class="val">{n_fat}</div><div class="lbl">Faturas acumuladas</div></div>', unsafe_allow_html=True)
+        c2.markdown(f'<div class="me-metric ok"><div class="val">{n_ok}</div><div class="lbl">OK</div></div>', unsafe_allow_html=True)
+        c3.markdown(f'<div class="me-metric inv"><div class="val">{n_inv}</div><div class="lbl">Investigar</div></div>', unsafe_allow_html=True)
+        c4.markdown(f'<div class="me-metric div"><div class="val">{n_div}</div><div class="lbl">Divergência</div></div>', unsafe_allow_html=True)
+
+        st.markdown(f"""
+        <div style="margin:16px 0 8px;">
+            <span style="font-size:13px; color:#5A6B7C;">Valor total acumulado</span><br>
+            <span style="font-size:28px; font-weight:500; color:#0A2540; font-feature-settings:'tnum';">{val_fmt}</span>
+        </div>
+        """, unsafe_allow_html=True)
+
+        st.markdown(f"**{n_ucs} unidade(s) consumidora(s)**")
+        ucs_labels = sorted({r.get("conta_uc", "—") for r in registros_acum})
+        st.caption("  ·  ".join(ucs_labels))
+
+        st.divider()
+
+        # Validação antes de gerar
+        cliente_val = st.session_state.get("cliente_nome", "").strip()
+        if not cliente_val:
+            st.warning("⚠️ Informe o **nome do cliente** na barra lateral antes de gerar o relatório.")
+
+        col_btn, col_info = st.columns([2, 3])
+        with col_btn:
+            gerar = st.button(
+                "📄 Envio finalizado — Gerar Relatório PDF",
+                type="primary",
+                disabled=(not cliente_val or not RELATORIO_PDF_DISPONIVEL),
+            )
+
+        if gerar and cliente_val:
+            with st.spinner("Gerando relatório PDF..."):
+                try:
+                    pdf_bytes = gerar_relatorio_pdf(cliente_val, registros_acum)
+                    nome_arquivo = re.sub(r"[^\w\d\-_]", "_", cliente_val)[:40]
+                    st.success("✅ Relatório gerado com sucesso!")
+                    st.download_button(
+                        "⬇️ Baixar Relatório PDF",
+                        pdf_bytes,
+                        file_name=f"Relatorio_Auditoria_{nome_arquivo}.pdf",
+                        mime="application/pdf",
+                    )
+                except Exception as e:
+                    st.error(f"Erro ao gerar relatório: {e}")
+
+
+# ── Tab 4: Sobre ──────────────────────────────────────────────────────────────
+with tab4:
     st.markdown("#### Como funciona")
     st.markdown("""
 A ferramenta extrai, audita e classifica cada item da fatura de forma automática:
