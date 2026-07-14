@@ -1,710 +1,634 @@
+# -*- coding: utf-8 -*-
 """
-Extrator de fatura CPFL Piratininga
+extractor.py - Parser unificado Neoenergia PE
+Suporta:
+  - Layout ANTIGO  (jul/21 – ago/22): "NOTA FISCAL | FATURA"
+  - Layout DANFE   (set/22+):         "DANFE - DOCUMENTO AUXILIAR"
+    • Sub-layout standard (22-25): cols VALOR=8
+    • Sub-layout compact  (26+):   cols VALOR=6
+Autor: Minuto Energia
+"""
 
-Suporta dois formatos:
-  - Formato 1 ("Nota Fiscal"):  faturas ate ~set/2025 (layout antigo)
-  - Formato 2 ("DANF3E"):       faturas a partir de out/2025 (layout novo)
-"""
 import re
-import datetime
-from collections import defaultdict
 import pdfplumber
+from pathlib import Path
 
 
-def _to_number(s):
-    if s is None:
+# ─────────────────────────── helpers ────────────────────────────────────────
+
+def _num(s):
+    """Converte string BR '1.234,56' → float. Retorna None se inválido."""
+    if not s:
         return None
-    s = str(s).strip()
-    if not s or s == "-":
-        return None
-    if "," in s:
-        s = s.replace(".", "").replace(",", ".")
+    s = str(s).strip().rstrip("-").replace(".", "").replace(",", ".")
     try:
         return float(s)
     except ValueError:
         return None
 
 
-def _to_date(s):
-    if not s:
-        return None
-    try:
-        return datetime.datetime.strptime(s.strip(), "%d/%m/%Y").date()
-    except ValueError:
-        return None
+def _flatten(tbl):
+    return [str(c) for row in tbl for c in row if c]
 
 
-def _extract_horizontal_lines(pdf_path):
-    lines = []
-    with pdfplumber.open(pdf_path) as pdf:
-        for page in pdf.pages:
-            words = page.extract_words(use_text_flow=True, extra_attrs=["upright"])
-            horiz = [w for w in words if w.get("upright", True)]
-            rows = defaultdict(list)
-            for w in horiz:
-                row_key = round(w["top"] / 8)
-                rows[row_key].append(w)
-            for k in sorted(rows.keys()):
-                row_words = sorted(rows[k], key=lambda x: x["x0"])
-                line = " ".join(w["text"] for w in row_words)
-                lines.append(line)
-    return lines
+def _search(pattern, text, group=1, flags=re.IGNORECASE):
+    m = re.search(pattern, text, flags)
+    return m.group(group).strip() if m else None
 
 
-def _extract_bandeira_dias(full_text):
-    """
-    Extrai {patamar: dias} das linhas de bandeira da fatura CPFL Piratininga.
+# ─────────────────────────── LAYOUT ANTIGO ──────────────────────────────────
 
-    Linha TUSD (L18): patamar no INICIO do ciclo de leitura
-    Linha TE   (L19): "Vermelha N Dias P_x" -- tres casos:
-      1) TUSD == P_x (mesmo patamar): P_x teve N dias no inicio + M dias do Pat_b
-      2) TUSD eh Vermelha P_y, P_y != P_x (mudanca de patamar, mesma cor):
-           OLD -- P_x eh o patamar FINAL; TUSD (P_y) teve N dias no inicio
-      3) TUSD eh cor diferente (ex: Amarela, Verde):
-           P_x teve N dias no inicio (maio); Pat_b adiciona M dias da cor final
-    Linha Band (L20+): "Adicional de Bandeira COLOR MES/ANO ... M Dias"
-    """
-    dias = {}
+def _parse_antigo(text, tables):
+    d = {}
+    flat = _flatten(sum(tables, []) if tables else [[]])
 
-    # Patamar da linha TUSD (inicio do ciclo)
-    tusd_patamar = None
-    m_tusd = re.search(
-        r"\bTUSD\s+\w+/\d+\b[\s\S]{0,300}?\b(VERMELHA\s+P([12])|AMARELA|VERDE)\b",
-        full_text, re.IGNORECASE
-    )
-    if m_tusd:
-        raw = m_tusd.group(1).upper().strip()
-        if "VERMELHA" in raw and m_tusd.group(2):
-            tusd_patamar = f"VERMELHA-P{m_tusd.group(2)}"
-        else:
-            tusd_patamar = raw  # "AMARELA" ou "VERDE"
+    # ── cabeçalho (leitura das células de tabela) ────────────────────────
+    for cell in flat:
+        if "DATA DE VENCIMENTO" in cell:
+            m = re.search(r"DATA DE VENCIMENTO\s*\n?\s*(\d{2}/\d{2}/\d{4})", cell)
+            if m:
+                d["vencimento"] = m.group(1)
+            m = re.search(r"TOTAL A PAGAR.*?\n?\s*([\d.,]+)", cell, re.IGNORECASE)
+            if m:
+                d["total_a_pagar"] = _num(m.group(1))
 
-    # Linha TE: "Vermelha N Dias P_x"
-    pat_te = re.compile(r"\bVERMELHA\s+(\d{1,3})\s+[Dd]ias?\s+P([12])\b", re.IGNORECASE)
-    m_te = pat_te.search(full_text)
+        if "CONTA CONTRATO" in cell:
+            m = re.search(r"CONTA CONTRATO\s*\n?\s*(\d+)", cell)
+            if m:
+                d["conta_contrato"] = m.group(1)
+            m = re.search(r"N[ºO]\s+DO\s+CLIENTE\s*\n?\s*(\d+)", cell)
+            if m:
+                d["cod_cliente"] = m.group(1)
+            m = re.search(r"N[ºO]\s+DA\s+INSTALA[ÇC][AÃ]O\s*\n?\s*(\d+)", cell)
+            if m:
+                d["cod_instalacao"] = m.group(1)
 
-    te_patamar = None
-    first_key  = None
+        if "EMISSÃO" in cell or "EMISSAO" in cell:
+            m = re.search(r"EMISS[AÃ]O.*?\n?\s*(\d{2}/\d{2}/\d{4})", cell)
+            if m:
+                d["data_emissao"] = m.group(1)
+            m = re.search(r"N[ÚU]MERO DA NOTA FISCAL\s*\n?\s*(\d+)", cell)
+            if m:
+                d["nr_nota_fiscal"] = m.group(1)
 
-    if m_te:
-        te_n_dias  = int(m_te.group(1))
-        te_patamar = f"VERMELHA-P{m_te.group(2)}"
-
-        if tusd_patamar == te_patamar:
-            # Caso 1 -- mesmo patamar (ex: jul/dez: P1→P1 ou P2→P2)
-            # te_n_dias = dias do periodo inicial (Vermelha)
-            # pat_b Amarela/Verde traz os dias do periodo final (cor diferente)
-            first_key = te_patamar
-        elif (tusd_patamar and tusd_patamar.startswith("VERMELHA")
-              and te_patamar.startswith("VERMELHA")):
-            # Caso 2 -- mudanca de patamar dentro da Vermelha (ex: ago: P1→P2, out: P2→P1)
-            # TUSD = patamar inicial; te_patamar = patamar final
-            # te_n_dias = dias do patamar inicial (TUSD)
-            first_key = tusd_patamar
-        else:
-            # Caso 3 -- mudanca de cor (ex: jun: Amarela→Vermelha P1)
-            # TUSD = cor inicial (ex: Amarela); te_patamar = cor final (ex: Vermelha P1)
-            # te_n_dias = dias do periodo inicial (TUSD = Amarela)
-            # pat_b linha Amarela traz "M Dias" = dias do periodo Vermelha (final)
-            first_key = tusd_patamar  # ex: AMARELA
-
-        dias[first_key] = te_n_dias
-
-    # Indicador de Caso 3 para uso no pat_b abaixo
-    is_case3 = (
-        m_te is not None and
-        tusd_patamar is not None and
-        te_patamar is not None and
-        not tusd_patamar.startswith("VERMELHA") and
-        te_patamar.startswith("VERMELHA")
-    )
-
-    # Linha(s) "Adicional de Bandeira COLOR MES/ANO ... M Dias" -- periodo complementar
-    pat_b = re.compile(
-        r"Adicional\s+de\s+Bandeira\s+(VERMELHA|AMARELA|VERDE)\s+\w+/\d+[\s\S]{0,200}?(\d{1,3})\s+[Dd]ias\b",
-        re.IGNORECASE
-    )
-    for bm in pat_b.finditer(full_text):
-        cor    = bm.group(1).upper()
-        m_dias = int(bm.group(2))
-
-        if cor == "VERMELHA":
-            if is_case3:
-                # Caso 3: linha Adicional Vermelha tem "N Dias" = dias do periodo
-                # nao-Vermelha (ja capturado via te_n_dias). Ignorar.
-                continue
-            elif tusd_patamar == te_patamar and te_patamar:
-                # Caso 1: mesmo patamar -> final = mesmo
-                final_key = te_patamar
-            elif tusd_patamar and tusd_patamar.startswith("VERMELHA") and te_patamar:
-                # Caso 2: mudanca de patamar -> final = te_patamar
-                final_key = te_patamar
-            elif tusd_patamar and tusd_patamar.startswith("VERMELHA"):
-                final_key = tusd_patamar
-            else:
-                final_key = "VERMELHA-P1"
-        else:
-            if is_case3:
-                # Caso 3: linha Adicional Amarela/Verde tem "M Dias" = dias do
-                # periodo Vermelha (te_patamar), nao da cor atual
-                final_key = te_patamar
-            else:
-                final_key = cor  # "AMARELA" ou "VERDE"
-
-        dias[final_key] = dias.get(final_key, 0) + m_dias
-
-    # Fallback legado (sem linha TE e sem linha Adicional com Dias)
-    if not dias:
-        pat_c = re.compile(
-            r"\b(VERDE|AMARELA|VERMELHA)\s*(?:(P[12]))?\s+(\d{1,3})\s+[Dd]ias?\b",
-            re.IGNORECASE
-        )
-        for m in pat_c.finditer(full_text):
-            cor     = m.group(1).upper()
-            pat_tag = m.group(2)
-            n_dias  = int(m.group(3))
-            if cor == "VERDE":
-                key = "VERDE"
-            elif cor == "AMARELA":
-                key = "AMARELA"
-            else:
-                key = "VERMELHA-P" + (pat_tag[-1] if pat_tag else "1")
-            dias[key] = dias.get(key, 0) + n_dias
-
-    return dias
-
-
-def _detect_bandeira_vigente(full_text, dias_patamar):
-    if dias_patamar.get("VERMELHA-P2", 0) > 0:
-        return "VERMELHA-P2"
-    if dias_patamar.get("VERMELHA-P1", 0) > 0:
-        return "VERMELHA-P1"
-    if dias_patamar.get("AMARELA", 0) > 0:
-        return "AMARELA"
-    if re.search(r"\bVERMELHA\b.*?\bP2\b", full_text, re.IGNORECASE | re.DOTALL):
-        return "VERMELHA-P2"
-    if re.search(r"\bVERMELHA\b.*?\bP1\b", full_text, re.IGNORECASE | re.DOTALL):
-        return "VERMELHA-P1"
-    if re.search(r"\bVERMELHA\b", full_text, re.IGNORECASE):
-        return "VERMELHA-P1"
-    if re.search(r"\bAMARELA\b", full_text, re.IGNORECASE):
-        return "AMARELA"
-    return "VERDE"
-
-
-# ---------------------------------------------------------------------------
-# Formato 1 — "Nota Fiscal" (mai-set/2025)
-# ---------------------------------------------------------------------------
-
-def _extract_formato1(lines, full_text):
-    data = {}
-
-    m = re.search(r"N[oOº°]\s+(\d+)\s+S[eé]rie\s+C", full_text)
-    if m:
-        data["nota_fiscal"] = m.group(1)
-
-    m = re.search(r"Emiss[ãa]o:\s*(\d{2}/\d{2}/\d{4})", full_text)
-    if m:
-        data["data_emissao"] = _to_date(m.group(1))
-
-    m = re.search(r"Conta\s+Contrato\s+N[°º]\s*(\d+)", full_text)
-    if m:
-        data["conta_contrato"] = m.group(1)
-
-    m = re.search(r"[Ll]eitura\s+[Pp]r[oó]ximo\s+M[eê]s[:\s]*(\d{2}/\d{2}/\d{4})", full_text)
-    if m:
-        data["proxima_leitura"] = _to_date(m.group(1))
-
-    # www.cpfl.com.br {UC} {CodigoCliente} {MES/ANO} {vencimento} {total}
-    m = re.search(
-        r"www\.cpfl\.com\.br\s+(\d{5,12})\s+(\d{8,13})\s+([A-Z]{3}/\d{4})\s+(\d{2}/\d{2}/\d{4})\s+([\d.,]+)",
-        full_text
-    )
-    if m:
-        data["uc"] = m.group(1)
-        data["codigo_cliente"] = m.group(2)
-        data["mes_ref"] = m.group(3)
-        data["data_vencimento"] = _to_date(m.group(4))
-        data["total_a_pagar"] = _to_number(m.group(5))
-
-    # Cliente + CPF + Classificacao
-    m = re.search(
-        r"([A-Z\xC0-\xDC][A-Z\xC0-\xDC\s]{4,40}?)\s+CPF:\s*([\d.*/-]+)\s+CLASSIFICA",
-        full_text
-    )
-    if m:
-        data["cliente_nome"] = m.group(1).strip()
-        data["cliente_cpf"] = m.group(2).strip()
-
-    m = re.search(r"CLASSIFICA[ÇC][ÃA]O:\s*([\w\s\-/.]+?)(?:\s+-\s+Bif|\s+-\s+Monof|\s+-\s+Trif|$)", full_text)
-    if m:
-        class_full = m.group(1).strip()
-        data["classificacao"] = class_full
-        m2 = re.search(r"\b(B[1-4][AaBb]?|A[1-4])\b", class_full)
-        if m2:
-            data["subgrupo"] = m2.group(1).upper()
-        if "onvencional" in class_full:
-            data["modalidade"] = "Convencional"
-        elif "ranca" in class_full:
-            data["modalidade"] = "Branca"
-
-    # Tipo de fornecimento (captura variante completa, ex: "Bifásico a 3 condutores")
-    m = re.search(
-        r"((?:Bif[aá]sico|Monof[aá]sico|Trif[aá]sico)"
-        r"(?:\s+a\s+(?:dois|três|2|3)\s+condutores)?)",
-        full_text, re.IGNORECASE
-    )
-    if m:
-        data["tipo_fornecimento"] = m.group(1).strip()
-
-    # Aliquotas PIS/COFINS do cabecalho da tabela
-    m = re.search(r"PIS/COFINS\s+([\d,]+)%\s+([\d,]+)%", full_text)
-    if m:
-        data["_pis_alq_pct"] = _to_number(m.group(1))
-        data["_cofins_alq_pct"] = _to_number(m.group(2))
-
-    # Itens
-    items = []
-
-    # TUSD
-    m = re.search(
-        r"0605Consumo Uso Sistema \[KWh\]-TUSD\s+\w+/\d+\s+([\d.,]+),?\d*\s+kWh\s+"
-        r"([\d.,]+)\s+([\d.,]+)\s+([\d.,]+)\s+([\d.,]+)\s+([\d.,]+)\s+([\d.,]+)\s+([\d.,]+)\s+([\d.,]+)",
-        full_text
-    )
-    if m:
-        items.append({
-            "tipo": "consumo_tusd",
-            "descricao": "Consumo Uso Sistema [KWh]-TUSD",
-            "unidade": "kWh",
-            "quantidade": _to_number(m.group(1)),
-            "preco_unit_com_trib": _to_number(m.group(2)),
-            "valor": _to_number(m.group(3)),
-            "base_icms": _to_number(m.group(4)),
-            "aliq_icms": _to_number(m.group(5)),
-            "icms": _to_number(m.group(6)),
-            "pis": _to_number(m.group(7)),
-            "cofins": _to_number(m.group(8)),
-        })
-
-    m = re.search(
-        r"0601Consumo - TE\s+\w+/\d+\s+([\d.,]+),?\d*\s+kWh\s+"
-        r"([\d.,]+)\s+([\d.,]+)\s+([\d.,]+)\s+([\d.,]+)\s+([\d.,]+)\s+([\d.,]+)\s+([\d.,]+)\s+([\d.,]+)",
-        full_text
-    )
-    if m:
-        items.append({
-            "tipo": "consumo_te",
-            "descricao": "Consumo - TE",
-            "unidade": "kWh",
-            "quantidade": _to_number(m.group(1)),
-            "preco_unit_com_trib": _to_number(m.group(2)),
-            "valor": _to_number(m.group(3)),
-            "base_icms": _to_number(m.group(4)),
-            "aliq_icms": _to_number(m.group(5)),
-            "icms": _to_number(m.group(6)),
-            "pis": _to_number(m.group(7)),
-            "cofins": _to_number(m.group(8)),
-        })
-
-    band_pat = re.compile(
-        # Aceita texto livre entre "Adicional" e "de Bandeira" (ex: quando
-        # pdfplumber mescla a linha com sub-itens como "0804Juros de Mora").
-        # Aceita tambem dois meses (ex: MAR/25 JUN/25) antes dos valores.
-        r"0601Adicional[^\n]*?de\s+Bandeira\s+(VERMELHA(?:\s+P[12])?|AMARELA|VERDE)\s+(?:\w+/\d+\s+)+"
-        r"([\d.,]+)\s+([\d.,]+)\s+([\d.,]+)\s+([\d.,]+)\s+([\d.,]+)\s+([\d.,]+)",
-        re.IGNORECASE
-    )
-    for bm in band_pat.finditer(full_text):
-        cor = re.sub(r"\s+", "-", bm.group(1).upper().strip())
-        if cor == "VERMELHA":
-            cor = "VERMELHA-P1"
-        items.append({
-            "tipo": "bandeira",
-            "descricao": f"Adicional de Bandeira {cor}",
-            "patamar": cor,
-            "valor": _to_number(bm.group(2)),
-            "base_icms": _to_number(bm.group(3)),
-            "aliq_icms": _to_number(bm.group(4)),
-            "icms": _to_number(bm.group(5)),
-            "pis": _to_number(bm.group(6)),
-            "cofins": _to_number(bm.group(7)),
-        })
-
-    m = re.search(r"[Bb][oô]nus.*?Lei.*?(\d{1,5}[.,]\d{2})", full_text)
-    if m:
-        items.append({"tipo": "bonus_itaipu", "descricao": "Bonus Itaipu / Lei 10438", "valor": _to_number(m.group(1))})
-
-    data["itens"] = items
-
-    # Tributos — Total Consolidado
-    m = re.search(
-        r"Total\s+Consolidado[\s\S]{0,20}?([\d.,]+)\s+([\d.,]+)\s+([\d.,]+)\s+([\d.,]+)\s+([\d.,]+)\s+([\d.,]+)",
-        full_text
-    )
-    if not m:
-        m = re.search(
-            r"\n([\d.,]+)\s+([\d.,]+)\s+([\d.,]+)\s+([\d.,]+)\s+([\d.,]+)\s+([\d.,]+)\s*\n",
-            full_text
-        )
-    tributos = {}
-    if m:
-        total_pagar = _to_number(m.group(1))
-        total_dist = _to_number(m.group(2))
-        icms_val = _to_number(m.group(3))
-        base_pis = _to_number(m.group(4))
-        pis_val = _to_number(m.group(5))
-        cofins_val = _to_number(m.group(6))
-        pis_alq = data.pop("_pis_alq_pct", None) or 0
-        cofins_alq = data.pop("_cofins_alq_pct", None) or 0
-        tributos["icms"] = {"base": total_dist, "aliquota_pct": 18.0, "valor": icms_val}
-        tributos["pis"] = {"base": base_pis, "aliquota_pct": pis_alq, "valor": pis_val}
-        tributos["cofins"] = {"base": base_pis, "aliquota_pct": cofins_alq, "valor": cofins_val}
-        if not data.get("total_a_pagar"):
-            data["total_a_pagar"] = total_pagar
-        data["total_fatura"] = total_dist
-    data["tributos"] = tributos
-
-    # Medidor — datas podem vir coladas: "20/05/202517/04/2025" (sem espaco)
-    m = re.search(
-        r"Consumo\s+kWh\s+([\d.,]+)\s+([\d.,]+)\s+(\d{8,10})\s+Ativa\s+(\d+)\s+"
-        r"(\d{2}/\d{2}/\d{4})\s*(\d{2}/\d{2}/\d{4})\s+(\d+)\s+([\d.,]+)\s+Multipl\.\s+(\d+)",
-        full_text
-    )
-    if m:
-        data["medidores"] = [{
-            "numero": m.group(3),
-            "grandeza": "Energia Ativa",
-            "leitura_anterior": _to_number(m.group(7)),
-            "leitura_atual": _to_number(m.group(4)),
-            "data_leitura_atual": _to_date(m.group(5)),
-            "data_leitura_anterior": _to_date(m.group(6)),
-            "constante": _to_number(m.group(8)),
-            "consumo": _to_number(m.group(9)),
-        }]
-        data["leitura_atual"] = _to_date(m.group(5))
-        data["leitura_anterior"] = _to_date(m.group(6))
-        if data.get("leitura_atual") and data.get("leitura_anterior"):
-            data["dias_ciclo"] = (data["leitura_atual"] - data["leitura_anterior"]).days
-        if not data.get("uc"):
-            data["uc"] = m.group(3)
-
-    return data
-
-
-# ---------------------------------------------------------------------------
-# Formato 2 — DANF3E (out/2025 em diante)
-# ---------------------------------------------------------------------------
-
-def _extract_formato2(lines, full_text):
-    data = {}
-
-    # NF + data emissao
-    m = re.search(
-        r"NOTA FISCAL\s+N[OoºPp°]\s*(\d+)\s*[-/]?\s*S[ÉE]RIE\s*\d+\s*/?\s*DATA DE EMISS[ÃA]O:\s*\n?\s*(\d{2}/\d{2}/\d{4})",
-        full_text
-    )
-    if m:
-        data["nota_fiscal"] = m.group(1)
-        data["data_emissao"] = _to_date(m.group(2))
-
-    # Cabecalho: lote/roteiro/medidor/pag/datas
-    m = re.search(
-        r"\d+\s+SORBU\w+-\w+\s+(\d{8,10})\s+\d+/\d+\s+"
-        r"(\d{2}/\d{2}/\d{4})\s+(\d{2}/\d{2}/\d{4})\s+(\d{2}/\d{2}/\d{4})",
-        full_text
-    )
-    if m:
-        data["_medidor_id"] = m.group(1)
-        if not data.get("data_emissao"):
-            data["data_emissao"] = _to_date(m.group(2))
-        data["proxima_leitura"] = _to_date(m.group(3))
-        data["data_vencimento"] = _to_date(m.group(4))
-
-    # Datas de leitura + dias — evita capturar o "24" de "24/11/2025"
-    m = re.search(r"(\d{2}/\d{2}/\d{4})\s+(\d{2}/\d{2}/\d{4})\s+(\d{2,3})(?!/)", full_text)
-    if m:
-        data["leitura_atual"] = _to_date(m.group(1))
-        data["leitura_anterior"] = _to_date(m.group(2))
-        data["dias_ciclo"] = int(m.group(3))
-
-    # Cliente nome + codigo
-    for line in lines:
-        line = line.strip()
-        m = re.match(r"^([A-Z\xC0-\xDC][A-Z\xC0-\xDC\s]{5,40}?)\s+(\d{10,13})$", line)
+    # ── ref mês/ano (rodapé) ─────────────────────────────────────────────
+    if "ref_mes_ano" not in d:
+        m = re.search(r"(\d{2}/\d{4})\s+[\d.,]+\s+\d{2}/\d{2}/\d{4}", text)
         if m:
-            data["cliente_nome"] = m.group(1).strip()
-            data["codigo_cliente"] = m.group(2).strip()
-            break
+            d["ref_mes_ano"] = m.group(1)
 
-    # CPF
-    m = re.search(r"CPF:\s*([\d.*/-]+)", full_text)
+    # ── bandeira ─────────────────────────────────────────────────────────
+    m = re.search(r"bandeira em vigor.*?(verde|amarela|vermelha|escassez|cinza)",
+                  text, re.IGNORECASE)
     if m:
-        data["cliente_cpf"] = m.group(1).strip()
+        d["bandeira_cor"] = m.group(1).upper()
+    else:
+        m = re.search(r"Bandeira\s+(VERDE|AMARELA|VERMELHA|ESCASSEZ|CINZA)", text, re.IGNORECASE)
+        if m:
+            d["bandeira_cor"] = m.group(1).upper()
 
-    # Endereco
-    for i, line in enumerate(lines):
-        if re.match(r"^[A-Z]{1,3}\s+[A-Z]", line.strip()) and "," in line:
-            end_parts = [line.strip()]
-            for j in range(i+1, min(i+3, len(lines))):
-                nxt = lines[j].strip()
-                if re.match(r"^\d{5}-\d{3}", nxt) or "SP" in nxt:
-                    end_parts.append(nxt)
-                    break
-            if len(end_parts) > 1:
-                data["cliente_endereco"] = " - ".join(end_parts)
+    m = re.search(r"Acréscimo Bandeira\s+\w+\s+([\d.,]+)", text)
+    if m:
+        d["valor_bandeira"] = _num(m.group(1))
+
+    # ── COSIP / ICMS-CDE ─────────────────────────────────────────────────
+    m = re.search(r"Contrib\.?\s+Ilum\.?\s+P[úu]blica\s+Municipal\s+([\d.,]+)", text)
+    if m:
+        d["cosip"] = _num(m.group(1))
+
+    m = re.search(r"ICMS Subven[çc][aã]o-CDE[^\n]+([\d.,]+)\s*$", text, re.MULTILINE)
+    if m:
+        d["icms_cde"] = _num(m.group(1))
+
+    # ── total da fatura ───────────────────────────────────────────────────
+    m = re.search(r"TOTAL DA FATURA\s+([\d.,]+)", text)
+    if m:
+        d["total_fatura"] = _num(m.group(1))
+
+    # ── itens TUSD / TE (via tabela) ─────────────────────────────────────
+    for tbl in tables:
+        for row in tbl:
+            cells = [str(c) if c else "" for c in row]
+            joined = "\n".join(cells)
+            if "Consumo Ativo(kWh)-TUSD" not in joined:
+                continue
+
+            # Célula de descrição
+            desc_cell = next((c for c in cells if "Consumo Ativo" in c), "")
+
+            # Bandeira dentro da descrição
+            if "Bandeira" in desc_cell and "bandeira_cor" not in d:
+                m = re.search(r"Acréscimo Bandeira\s+(\w+)", desc_cell)
+                if m:
+                    d["bandeira_cor"] = m.group(1).upper()
+
+            # Quantidades: célula que contém "100,0000000" ou similar (7+ decimais)
+            for i, c in enumerate(cells):
+                if re.search(r"\d+,\d{7}", c) and "consumo_kwh_tusd_qtd" not in d:
+                    qtds = re.findall(r"(\d+,\d+)", c)
+                    if qtds:
+                        d["consumo_kwh_tusd_qtd"] = _num(qtds[0])
+                    if len(qtds) > 1:
+                        d["consumo_kwh_te_qtd"] = _num(qtds[1])
+
+                # Preços unitários (com trib): "0,50043497\n0,39775264"
+                if re.match(r"^0,\d{7,}\n0,\d{7,}\s*$", c.strip()) and "preco_tusd" not in d:
+                    precos = re.findall(r"(0,\d+)", c)
+                    if precos:
+                        d["preco_tusd"] = _num(precos[0])
+                    if len(precos) > 1:
+                        d["preco_te"] = _num(precos[1])
+
+                # Valores dos itens: linha com 2+ valores "xx,xx"
+                if re.match(r"^[\d]+,\d{2}\n[\d]+,\d{2}", c.strip()) and "valor_tusd" not in d:
+                    vals = re.findall(r"([\d]+,\d{2})", c)
+                    if len(vals) >= 2:
+                        d["valor_tusd"] = _num(vals[0])
+                        d["valor_te"]   = _num(vals[1])
+                    if len(vals) > 2 and "cosip" not in d:
+                        d["cosip"] = _num(vals[2])
+                    if len(vals) > 3 and "icms_cde" not in d:
+                        d["icms_cde"] = _num(vals[3])
+
+            break  # primeira linha de Consumo Ativo basta
+
+    # Tarifas sem trib (texto)
+    m = re.search(r"Consumo Ativo\(kWh\)[ -]+TUSD\s+(0,\d+)", text)
+    if m:
+        d["tarifa_tusd_sem_trib"] = _num(m.group(1))
+    m = re.search(r"Consumo Ativo\(kWh\)[ -]+TE\s+(0,\d+)", text)
+    if m:
+        d["tarifa_te_sem_trib"] = _num(m.group(1))
+
+    # ── tributos (linha de valores numéricos: base%, valor x3) ───────────
+    for tbl in tables:
+        for row in tbl:
+            cells = [str(c).strip() if c else "" for c in row]
+            # Linha de dados: começa com número e tem pelo menos 9 campos numéricos
+            nums = [_num(c) for c in cells if re.match(r"^[\d.,]+$", c)]
+            if len(nums) >= 9:
+                d.setdefault("icms_base",    nums[0])
+                d.setdefault("icms_aliq",    nums[1])
+                d.setdefault("icms_valor",   nums[2])
+                d.setdefault("pis_base",     nums[3])
+                d.setdefault("pis_aliq",     nums[4])
+                d.setdefault("pis_valor",    nums[5])
+                d.setdefault("cofins_base",  nums[6])
+                d.setdefault("cofins_aliq",  nums[7])
+                d.setdefault("cofins_valor", nums[8])
                 break
 
-    # Classificacao — usa re.search para encontrar B1/B2/B3 dentro da string
-    m = re.search(r"Classifica[cç][aã]o:\s*([\w\s]+?)\s+Tipo de Fornecimento:", full_text)
+    # ── medidor / leituras ────────────────────────────────────────────────
+    for tbl in tables:
+        for row in tbl:
+            cells = [str(c).strip() if c else "" for c in row]
+            if any("CAT" in c for c in cells):
+                for c in cells:
+                    if re.match(r"^\d{7,10}$", c) and "nr_medidor" not in d:
+                        d["nr_medidor"] = c
+                    elif re.match(r"^\d{2}/\d{2}/\d{4}$", c):
+                        if "data_leitura_anterior" not in d:
+                            d["data_leitura_anterior"] = c
+                        elif "data_leitura_atual" not in d:
+                            d["data_leitura_atual"] = c
+                    elif re.match(r"^[\d.]+,\d+$", c):
+                        if "leitura_anterior" not in d:
+                            d["leitura_anterior"] = _num(c)
+                        elif "leitura_atual" not in d:
+                            d["leitura_atual"] = _num(c)
+                    elif re.match(r"^\d{1,3}$", c) and "nr_dias" not in d and int(c) > 0:
+                        d["nr_dias"] = int(c)
+                    elif re.match(r"^1,\d+$", c) and "constante_medidor" not in d:
+                        d["constante_medidor"] = _num(c)
+
+    # Próxima leitura
+    m = re.search(r"DATA PREVISTA DA PR[ÓO]XIMA LEITURA:\s*(\d{2}/\d{2}/\d{4})", text)
     if m:
-        class_full = m.group(1).strip()
-        data["classificacao"] = class_full
-        m2 = re.search(r"\b(B[1-4][AaBb]?|A[1-4])\b", class_full)
-        if m2:
-            data["subgrupo"] = m2.group(1).upper()
-        if "onvencional" in class_full:
-            data["modalidade"] = "Convencional"
-        elif "ranca" in class_full:
-            data["modalidade"] = "Branca"
+        d["data_proxima_leitura"] = m.group(1)
 
-    # Tipo de fornecimento (captura variante completa, ex: "Bifásico a 3 condutores")
-    m = re.search(
-        r"((?:Bif[aá]sico|Monof[aá]sico|Trif[aá]sico)"
-        r"(?:\s+a\s+(?:dois|três|2|3)\s+condutores)?)",
-        full_text, re.IGNORECASE
-    )
+    # Classificação
+    m = re.search(r"CLASSIFICA[ÇC][AÃ]O\s*\n?\s*(B\d[^-\n]+)", text)
     if m:
-        data["tipo_fornecimento"] = m.group(1).strip()
+        d["classificacao"] = m.group(1).strip()
 
-    # Mes ref + vencimento + total
-    m = re.search(r"([A-Z]{3}/\d{4})\s+(\d{2}/\d{2}/\d{4})\s+R\$\s*([\d.,]+)", full_text)
+    # Tipo de fornecimento
+    if "tipo_fornecimento" not in d:
+        m = re.search(r"((?:Bif[aá]sico|Monof[aá]sico|Trif[aá]sico)\b[^,\n]*)", text, re.IGNORECASE)
+        if m:
+            d["tipo_fornecimento"] = m.group(1).strip()
+
+    return d
+
+
+# ─────────────────────────── LAYOUT DANFE ───────────────────────────────────
+
+def _parse_danfe(text, tables):
+    d = {}
+
+    # ── localiza a tabela principal e o índice da coluna VALOR ───────────
+    main_tbl_idx = None
+    col_quant    = 4   # default
+    col_preco    = 7   # default (PRECO UNIT. COM TRIB.)
+    col_valor    = 8   # default (VALOR R$)
+    col_tarifa   = 22  # default (TARIFA UNIT sem trib)
+    col_trib_lbl = 24  # default (PIS/COFINS/ICMS labels)
+    col_trib_base= 26  # default
+    col_trib_alq = 27  # default
+    col_trib_val = 28  # default
+
+    for ti, tbl in enumerate(tables):
+        for row in tbl:
+            cells = [str(c) if c else "" for c in row]
+            joined = " ".join(cells)
+            if "ITENS DA FATURA" in joined and "QUANT." in joined:
+                main_tbl_idx = ti
+                # Detecta índices dinamicamente
+                for i, c in enumerate(cells):
+                    cs = c.strip()
+                    if "QUANT." in cs:
+                        col_quant = i
+                    elif "PREÇO UNIT" in cs or "PRECO UNIT" in cs:
+                        col_preco = i
+                    elif re.match(r"VALOR\s*\n?\s*\(R\$\)", cs) or re.match(r"\.\s*VALOR\s*\n", cs):
+                        col_valor = i
+                    elif "TARIFA" in cs and "UNIT" in cs:
+                        col_tarifa = i
+                    elif "T RIBUTO" in cs or cs.strip() == "TRIBUTO":
+                        col_trib_lbl = i
+                    elif "BASE DE" in cs and i > col_trib_lbl:
+                        col_trib_base = i
+                    elif "ALÍQUOTA" in cs and "%" in cs and i > col_trib_lbl:
+                        col_trib_alq = i
+                    elif "VALOR" in cs and i > col_trib_lbl:
+                        col_trib_val = i
+                break
+        if main_tbl_idx is not None:
+            break
+
+    main_tbl = tables[main_tbl_idx] if main_tbl_idx is not None else (tables[0] if tables else [])
+
+    # ── tabela de instalação (geralmente tabela separada ou dentro da main) ─
+    for tbl in tables:
+        for row in tbl:
+            for cell in row:
+                if not cell:
+                    continue
+                cs = str(cell)
+                if "CÓDIGO DA INSTALAÇÃO" in cs or "CODIGO DA INSTALACAO" in cs:
+                    m = re.search(r"(\d{5,7})", cs)
+                    if m:
+                        d["cod_instalacao"] = m.group(1)
+                if "CÓDIGO DO CLIENTE" in cs or "CODIGO DO CLIENTE" in cs:
+                    m = re.search(r"(\d{7,12})", cs)
+                    if m:
+                        d.setdefault("conta_contrato", m.group(1))
+                        d.setdefault("cod_cliente",    m.group(1))
+
+    # Fallback instalação via texto (garbled)
+    if "cod_instalacao" not in d:
+        m_start = text.find("CÓDIGO DA INSTALAÇÃO")
+        m_end   = text.find("CANDEIAS/PRAZERES")
+        if m_start >= 0 and m_end > m_start:
+            section = text[m_start:m_end]
+            solo_digits = re.findall(r"(?:^|\n)\s*(\d)\s*(?:\n|$)", section)
+            if len(solo_digits) >= 5:
+                d["cod_instalacao"] = "".join(solo_digits)
+
+    # Fallback conta via texto
+    if "conta_contrato" not in d:
+        m = re.search(r"(\d{10})", text)
+        if m:
+            d.setdefault("conta_contrato", m.group(1))
+
+    # ── cabeçalho principal ───────────────────────────────────────────────
+    for row in main_tbl:
+        cells = [str(c) if c else "" for c in row]
+        joined = " ".join(cells)
+
+        if "REF:MÊS/ANO" in joined or "REF:MES/ANO" in joined:
+            for c in cells:
+                if "REF:M" in c:
+                    m = re.search(r"(\d{2}/\d{4})", c)
+                    if m:
+                        d["ref_mes_ano"] = m.group(1)
+                if "TOTAL A PAGAR" in c:
+                    m = re.search(r"TOTAL A PAGAR\s*R?\$?\s*\n?\s*([\d.,]+)", c)
+                    if m:
+                        d["total_a_pagar"] = _num(m.group(1))
+                if "VENCIMENTO" in c and "DATA" not in c:
+                    m = re.search(r"VENCIMENTO\s*\n?\s*(\d{2}/\d{2}/\d{4})", c)
+                    if m:
+                        d["vencimento"] = m.group(1)
+                if "DATA DE EMISSÃO" in c or "DATA DE EMISSAO" in c:
+                    m = re.search(r"(\d{2}/\d{2}/\d{4})", c)
+                    if m:
+                        d["data_emissao"] = m.group(1)
+
+        if "CLASSIFICAÇÃO" in joined or "CLASSIFICACAO" in joined:
+            for c in cells:
+                if "CLASSIFICAÇÃO" in c or "CLASSIFICACAO" in c:
+                    m = re.search(r"CLASSIFICA[ÇC][AÃ]O:\s*(.+?)(?:\n|$)", c)
+                    if m:
+                        d["classificacao"] = m.group(1).strip()
+
+        if "LEITURA ANTERIOR" in joined:
+            for c in cells:
+                if "LEITURA ANTERIOR" in c:
+                    m = re.search(r"LEITURA ANTERIOR\s+(\d{2}/\d{2}/\d{4})", c)
+                    if m:
+                        d["data_leitura_anterior"] = m.group(1)
+                if "LEITURA ATUAL" in c:
+                    m = re.search(r"LEITURA ATUAL\s+(\d{2}/\d{2}/\d{4})", c)
+                    if m:
+                        d["data_leitura_atual"] = m.group(1)
+                if "N° DE DIAS" in c or "Nº DE DIAS" in c:
+                    m = re.search(r"N[°º]\s*DE\s*DIAS\s+(\d+)", c)
+                    if m:
+                        d["nr_dias"] = int(m.group(1))
+                if "PRÓXIMA LEITURA" in c or "PROXIMA LEITURA" in c:
+                    m = re.search(r"PR[ÓO]XIMA LEITURA\s+(\d{2}/\d{2}/\d{4})", c)
+                    if m:
+                        d["data_proxima_leitura"] = m.group(1)
+
+    # ── cabeçalho extra: busca em todas as tabelas (pode estar fora da main_tbl) ─
+    for _tbl in tables:
+        for _row in _tbl:
+            for _cell in _row:
+                if not _cell:
+                    continue
+                cs = str(_cell)
+                if "REF:M" in cs and "ref_mes_ano" not in d:
+                    m = re.search(r"(\d{2}/\d{4})", cs)
+                    if m:
+                        d["ref_mes_ano"] = m.group(1)
+                if "VENCIMENTO" in cs and "DATA" not in cs and "vencimento" not in d:
+                    m = re.search(r"(\d{2}/\d{2}/\d{4})", cs)
+                    if m:
+                        d["vencimento"] = m.group(1)
+                if "TOTAL A PAGAR" in cs and "total_a_pagar" not in d:
+                    m = re.search(r"([\d.,]+)\s*$", cs.strip())
+                    if m:
+                        d["total_a_pagar"] = _num(m.group(1))
+                if ("DATA DE EMISSÃO" in cs or "DATA DE EMISSAO" in cs) and "data_emissao" not in d:
+                    m = re.search(r"(\d{2}/\d{2}/\d{4})", cs)
+                    if m:
+                        d["data_emissao"] = m.group(1)
+
+    # Fallbacks via texto
+    if "ref_mes_ano" not in d:
+        m = re.search(r"REF:M[EÊ]S/ANO\s*\n?\s*(\d{2}/\d{4})", text)
+        if m:
+            d["ref_mes_ano"] = m.group(1)
+    if "vencimento" not in d:
+        m = re.search(r"VENCIMENTO\s*\n?\s*(\d{2}/\d{2}/\d{4})", text)
+        if m:
+            d["vencimento"] = m.group(1)
+    if "total_a_pagar" not in d:
+        m = re.search(r"TOTAL A PAGAR R?\$?\s*([\d.,]+)", text)
+        if m:
+            d["total_a_pagar"] = _num(m.group(1))
+    if "data_emissao" not in d:
+        m = re.search(r"DATA DE EMISS[AÃ]O:\s*(\d{2}/\d{2}/\d{4})", text)
+        if m:
+            d["data_emissao"] = m.group(1)
+
+    # ── itens da fatura ───────────────────────────────────────────────────
+    for row in main_tbl:
+        cells = [str(c) if c else "" for c in row]
+        if len(cells) <= col_quant:
+            continue
+        if "Consumo-TUSD" not in cells[0]:
+            continue
+
+        desc_cell  = cells[0]
+        quant_cell = cells[col_quant] if col_quant < len(cells) else ""
+        preco_cell = cells[col_preco] if col_preco < len(cells) else ""
+        valor_cell = cells[col_valor] if col_valor < len(cells) else ""
+        tarif_cell = cells[col_tarifa] if col_tarifa < len(cells) else ""
+
+        # Quantidades: "409,00\n409,00"
+        qtds = re.findall(r"([\d]+,\d{2})", quant_cell)
+        if qtds:
+            d["consumo_kwh_tusd_qtd"] = _num(qtds[0])
+        if len(qtds) > 1:
+            d["consumo_kwh_te_qtd"] = _num(qtds[1])
+
+        # Preço com trib: "0,56163449\n0,44770473"
+        precos = re.findall(r"(0,\d{6,})", preco_cell)
+        if precos:
+            d["preco_tusd"] = _num(precos[0])
+        if len(precos) > 1:
+            d["preco_te"] = _num(precos[1])
+
+        # Valores dos itens: primeiro=TUSD, segundo=TE, terceiro=Bandeira ou COSIP
+        vals_pos = []
+        vals_neg = []
+        for vm in re.finditer(r"([\d]+,\d{2})(-?)", valor_cell, re.MULTILINE):
+            v = _num(vm.group(1))
+            if vm.group(2) == "-":
+                vals_neg.append(v)
+            else:
+                vals_pos.append(v)
+
+        if vals_pos:
+            d["valor_tusd"] = vals_pos[0]
+        if len(vals_pos) > 1:
+            d["valor_te"] = vals_pos[1]
+
+        # Bandeira
+        if "Bandeira" in desc_cell or "Band." in desc_cell:
+            m = re.search(r"(?:Acrés\.?|Acréscimo)\s+Band(?:eira)?\.?\s+(\w+)", desc_cell)
+            if m:
+                d["bandeira_cor"] = m.group(1).upper()
+            if len(vals_pos) > 2:
+                d["valor_bandeira"] = vals_pos[2]
+                if len(vals_pos) > 3:
+                    d["cosip"] = vals_pos[3]
+                if len(vals_pos) > 4:
+                    d["icms_cde"] = vals_pos[4]
+        else:
+            if len(vals_pos) > 2:
+                d["cosip"] = vals_pos[2]
+            if len(vals_pos) > 3:
+                d["icms_cde"] = vals_pos[3]
+
+        # Tarifa sem trib: "0,42538000\n0,33909000"
+        tarifas = re.findall(r"(0,\d{6,})", tarif_cell)
+        if tarifas:
+            d["tarifa_tusd_sem_trib"] = _num(tarifas[0])
+        if len(tarifas) > 1:
+            d["tarifa_te_sem_trib"] = _num(tarifas[1])
+
+        # Tributos consolidados (PIS/COFINS/ICMS) via tabela
+        trib_lbl  = cells[col_trib_lbl]  if col_trib_lbl  < len(cells) else ""
+        trib_base = cells[col_trib_base] if col_trib_base < len(cells) else ""
+        trib_alq  = cells[col_trib_alq]  if col_trib_alq  < len(cells) else ""
+        trib_val  = cells[col_trib_val]  if col_trib_val  < len(cells) else ""
+
+        if "PIS" in trib_lbl:
+            bases = re.findall(r"([\d.,]+)", trib_base)
+            alqs  = re.findall(r"([\d.,]+)", trib_alq)
+            vals  = re.findall(r"([\d.,]+)", trib_val)
+            if len(bases) >= 3:
+                d["pis_base"]    = _num(bases[0])
+                d["cofins_base"] = _num(bases[1])
+                d["icms_base"]   = _num(bases[2])
+            if len(alqs) >= 3:
+                d["pis_aliq"]    = _num(alqs[0])
+                d["cofins_aliq"] = _num(alqs[1])
+                d["icms_aliq"]   = _num(alqs[2])
+            if len(vals) >= 3:
+                d["pis_valor"]    = _num(vals[0])
+                d["cofins_valor"] = _num(vals[1])
+                d["icms_valor"]   = _num(vals[2])
+
+        break  # primeira linha de itens basta
+
+    # ── TUSD/TE via texto (sempre sobrescreve — coluna da tabela pode sangrar) ─
+    # Formato no texto: "Consumo-TUSD kWh {qtd} {preco_com_trib} {valor} ..."
+    m = re.search(r"Consumo-TUSD\s+kWh\s+([\d,]+)\s+([\d,]+)\s+([\d,]+)", text)
     if m:
-        data["mes_ref"] = m.group(1)
-        if not data.get("data_vencimento"):
-            data["data_vencimento"] = _to_date(m.group(2))
-        data["total_a_pagar"] = _to_number(m.group(3))
-
-    # Bloco tributos
-    m1 = re.search(r"([\d,]+)%\s+([\d,]+)%\s+ICMS\s+([\d.,]+)\s+([\d.,]+)\s+([\d.,]+)", full_text)
-    m2t = re.search(r"PIS/PASEP\s+([\d.,]+)\s+([\d.,]+)\s+([\d.,]+)", full_text)
-    m3 = re.search(r"COFINS\s+([\d.,]+)\s+([\d.,]+)\s+([\d.,]+)", full_text)
-    tributos = {}
-    if m1:
-        tributos["icms"] = {
-            "base": _to_number(m1.group(3)),
-            "aliquota_pct": _to_number(m1.group(4)),
-            "valor": _to_number(m1.group(5)),
-        }
-    if m2t:
-        tributos["pis"] = {
-            "base": _to_number(m2t.group(1)),
-            "aliquota_pct": _to_number(m2t.group(2)),
-            "valor": _to_number(m2t.group(3)),
-        }
-    if m3:
-        tributos["cofins"] = {
-            "base": _to_number(m3.group(1)),
-            "aliquota_pct": _to_number(m3.group(2)),
-            "valor": _to_number(m3.group(3)),
-        }
-    data["tributos"] = tributos
-
-    # Itens
-    items = []
-
-    m = re.search(
-        r"Consumo Uso Sistema \[KWh\]-TUSD\s+\w+/\d+\s+kWh\s+([\d.,]+)\s+([\d.,]+)\s+([\d.,]+)\s+([\d.,]+)",
-        full_text
-    )
+        d["consumo_kwh_tusd_qtd"] = _num(m.group(1))
+        d["preco_tusd"]           = _num(m.group(2))
+        d["valor_tusd"]           = _num(m.group(3))
+    m = re.search(r"Consumo-TE\s+kWh\s+([\d,]+)\s+([\d,]+)\s+([\d,]+)", text)
     if m:
-        items.append({
-            "tipo": "consumo_tusd",
-            "descricao": "Consumo Uso Sistema [KWh]-TUSD",
-            "unidade": "kWh",
-            "quantidade": _to_number(m.group(1)),
-            "tarifa_unit_sem": _to_number(m.group(2)),
-            "preco_unit_com_trib": _to_number(m.group(3)),
-            "valor": _to_number(m.group(4)),
-        })
+        d["consumo_kwh_te_qtd"] = _num(m.group(1))
+        d["preco_te"]           = _num(m.group(2))
+        d["valor_te"]           = _num(m.group(3))
 
-    m = re.search(
-        r"Consumo - TE\s+\w+/\d+\s+kWh\s+([\d.,]+)\s+([\d.,]+)\s+([\d.,]+)\s+([\d.,]+)",
-        full_text
-    )
+    # Bandeira via texto (fallback)
+    if "bandeira_cor" not in d:
+        m = re.search(r"bandeira em vigor.*?(verde|amarela|vermelha|escassez|cinza)",
+                      text, re.IGNORECASE)
+        if m:
+            d["bandeira_cor"] = m.group(1).upper()
+    if "valor_bandeira" not in d:
+        m = re.search(r"Acrés\.?\s+Band(?:eira)?\.?\s+\w+\s+([\d,]+)", text)
+        if m:
+            d["valor_bandeira"] = _num(m.group(1))
+
+    # COSIP / ICMS-CDE fallback via texto
+    if "cosip" not in d:
+        m = re.search(r"Ilum\.?\s+P[úu]b\.?\s+Municipal\s+([\d.,]+)", text)
+        if m:
+            d["cosip"] = _num(m.group(1))
+    if "icms_cde" not in d:
+        m = re.search(r"ICMS-CDE\s+\S+\s+([\d.,]+)", text)
+        if m:
+            d["icms_cde"] = _num(m.group(1))
+
+    # Parcelamento (cobrança de débito anterior)
+    if "valor_parcelamento" not in d:
+        m = re.search(r"Parc\d+/\d+\s+\S+\s+([\d.,]+)", text)
+        if m:
+            d["valor_parcelamento"] = _num(m.group(1))
+
+    # ── Tributos via texto (sempre sobrescreve — colunas de alíquota truncam) ──
+    m = re.search(r"\bPIS\b\s+([\d,]+)\s+([\d,]+)\s+([\d,]+)", text)
     if m:
-        items.append({
-            "tipo": "consumo_te",
-            "descricao": "Consumo - TE",
-            "unidade": "kWh",
-            "quantidade": _to_number(m.group(1)),
-            "tarifa_unit_sem": _to_number(m.group(2)),
-            "preco_unit_com_trib": _to_number(m.group(3)),
-            "valor": _to_number(m.group(4)),
-        })
-
-    band_pat = re.compile(
-        r"Adicional de Bandeira\s+(VERMELHA(?:\s+P[12])?|AMARELA|VERDE)\s+\w+/\d+\s+kWh\s+([\d.,]+)",
-        re.IGNORECASE
-    )
-    for bm in band_pat.finditer(full_text):
-        cor = re.sub(r"\s+", "-", bm.group(1).upper().strip())
-        if cor == "VERMELHA":
-            cor = "VERMELHA-P1"
-        items.append({
-            "tipo": "bandeira",
-            "descricao": f"Adicional de Bandeira {cor}",
-            "patamar": cor,
-            "valor": _to_number(bm.group(2)),
-        })
-
-    for pat_str, tipo, desc in [
-        (r"Juros de Mora\s+\w+/\d+\s+([\d.,]+)", "juros_mora", "Juros de Mora"),
-        (r"Multa por Atraso Pgto\s+\w+/\d+\s+([\d.,]+)", "multa", "Multa por Atraso"),
-        (r"Atualiza[cç][aã]o Monet[aá]ria\s+\w+/\d+\s+([\d.,]+)", "atualizacao_monetaria", "Atualizacao Monetaria"),
-    ]:
-        for rm in re.finditer(pat_str, full_text):
-            items.append({"tipo": tipo, "descricao": desc, "valor": _to_number(rm.group(1))})
-
-    data["itens"] = items
-
-    # Total fatura (Total Distribuidora)
-    m = re.search(r"Total Distribuidora\s+([\d.,]+)", full_text)
+        d["pis_base"]  = _num(m.group(1))
+        d["pis_aliq"]  = _num(m.group(2))
+        d["pis_valor"] = _num(m.group(3))
+    m = re.search(r"\bCOFINS\b\s+([\d,]+)\s+([\d,]+)\s+([\d,]+)", text)
     if m:
-        data["total_fatura"] = _to_number(m.group(1))
-
-    # Medidor
-    m = re.search(
-        r"(\d{8,10})\s+Energia Ativa-kWh [úu]nico\s+(\d+)\s+(\d+)\s+([\d.,]+)\s+(\d+)",
-        full_text
-    )
+        d["cofins_base"]  = _num(m.group(1))
+        d["cofins_aliq"]  = _num(m.group(2))
+        d["cofins_valor"] = _num(m.group(3))
+    m = re.search(r"\bICMS\b\s+([\d,]+)\s+([\d,]+)\s+([\d,]+)", text)
     if m:
-        data["medidores"] = [{
-            "numero": m.group(1),
-            "grandeza": "Energia Ativa",
-            "leitura_anterior": _to_number(m.group(2)),
-            "leitura_atual": _to_number(m.group(3)),
-            "constante": _to_number(m.group(4)),
-            "consumo": _to_number(m.group(5)),
-        }]
-        data["uc"] = m.group(1)
+        d["icms_base"]  = _num(m.group(1))
+        d["icms_aliq"]  = _num(m.group(2))
+        d["icms_valor"] = _num(m.group(3))
 
-    # Rodape: NF Série 0 conta total vencimento
-    m = re.search(r"(\d{8,10})\s+S[eé]rie\s+0\s+(\d{10,13})\s+([\d.,]+)\s+(\d{2}/\d{2}/\d{4})", full_text)
+    # ── total da fatura ───────────────────────────────────────────────────
+    for row in main_tbl:
+        cells = [str(c) if c else "" for c in row]
+        if cells and cells[0].strip() == "TOTAL":
+            if col_valor < len(cells) and cells[col_valor].strip():
+                v = _num(cells[col_valor].strip())
+                if v:
+                    d["total_fatura"] = v
+                    break
+            for c in cells[1:]:
+                v = _num(c.strip())
+                if v and v > 0:
+                    d["total_fatura"] = v
+                    break
+            break
+
+    # ── medidor / leituras ────────────────────────────────────────────────
+    for row in main_tbl:
+        cells = [str(c) if c else "" for c in row]
+        if not cells or not re.match(r"^\d{7,}", cells[0].strip()):
+            continue
+        d["nr_medidor"] = cells[0].strip()
+        reading_nums = []
+        for c in cells[1:]:
+            cs = c.strip()
+            if re.match(r"^[\d.]+,\d+$", cs):
+                reading_nums.append(_num(cs))
+            elif "CONSUMO" in cs.upper():
+                m = re.search(r"([\d.,]+)$", cs, re.MULTILINE)
+                if m:
+                    d.setdefault("consumo_medidor_kwh", _num(m.group(1)))
+        if len(reading_nums) >= 2:
+            d["leitura_anterior"] = reading_nums[0]
+            d["leitura_atual"]    = reading_nums[1]
+        if len(reading_nums) >= 3:
+            d["constante_medidor"] = reading_nums[2]
+        if len(reading_nums) >= 4:
+            d["consumo_medidor_kwh"] = reading_nums[3]
+        break
+
+    # Nr nota fiscal (protocolo)
+    m = re.search(r"Protocolo de autoriza[çc][aã]o:\s*(\d+)", text)
     if m:
-        if not data.get("nota_fiscal"):
-            data["nota_fiscal"] = m.group(1)
-        data["conta_contrato"] = m.group(2)
-        if not data.get("total_a_pagar"):
-            data["total_a_pagar"] = _to_number(m.group(3))
-        if not data.get("data_vencimento"):
-            data["data_vencimento"] = _to_date(m.group(4))
+        d["nr_nota_fiscal"] = m.group(1)
 
-    return data
+    # Tipo de fornecimento
+    if "tipo_fornecimento" not in d:
+        m = re.search(r"TIPO DE FORNECIMENTO[:\s]+(.+?)(?:\n|$)", text, re.IGNORECASE)
+        if m:
+            d["tipo_fornecimento"] = m.group(1).strip()
+
+    return d
 
 
-# ---------------------------------------------------------------------------
-# Funcao principal
-# ---------------------------------------------------------------------------
+# ─────────────────────────── PARSER PRINCIPAL ───────────────────────────────
 
-def extract_fatura(pdf_path):
-    lines = _extract_horizontal_lines(pdf_path)
-    full_text = "\n".join(lines)
-
-    data = {
-        "_source_file": str(pdf_path),
-        "_extracted_at": datetime.datetime.now().isoformat(),
-        "distribuidora": "CPFL Piratininga",
-        "modalidade": "Convencional",
+def parse_fatura(pdf_path):
+    """
+    Processa um PDF de fatura Neoenergia PE.
+    Retorna dict com todos os campos extraídos + metadados.
+    """
+    pdf_path = Path(pdf_path)
+    result = {
+        "arquivo":  pdf_path.name,
+        "layout":   None,
+        "erro":     None,
     }
 
-    is_danf3e = "DANF3E" in full_text or "COMPANHIA PIRATININGA" in full_text.upper()
+    try:
+        with pdfplumber.open(pdf_path) as pdf:
+            page   = pdf.pages[0]
+            text   = page.extract_text() or ""
+            tables = page.extract_tables()
 
-    if is_danf3e:
-        data["_formato"] = "DANF3E"
-        extra = _extract_formato2(lines, full_text)
-    else:
-        data["_formato"] = "NotaFiscal"
-        extra = _extract_formato1(lines, full_text)
+            if "DANFE" in text:
+                result["layout"] = "DANFE"
+                fields = _parse_danfe(text, tables)
+            elif "NOTA FISCAL | FATURA" in text:
+                result["layout"] = "ANTIGO"
+                fields = _parse_antigo(text, tables)
+            else:
+                result["layout"] = "DESCONHECIDO"
+                result["erro"]   = "Layout não reconhecido"
+                return result
 
-    data.update(extra)
+            result.update(fields)
 
-    # Bandeira e dias por patamar
-    dias_patamar = _extract_bandeira_dias(full_text)
-    data["dias_por_patamar"] = dias_patamar
-    if not data.get("bandeira_vigente"):
-        data["bandeira_vigente"] = _detect_bandeira_vigente(full_text, dias_patamar)
+    except Exception as e:
+        result["erro"] = str(e)
 
-    # GD
-    m = re.search(r"Energia\s+injetada\s+no\s+m[eê]s\s+([\d.,]+)\s+kWh", full_text, re.IGNORECASE)
-    if m:
-        data["gd_injetada_mes"] = _to_number(m.group(1))
-    if re.search(r"Unidade\s+Microger[aá]", full_text, re.IGNORECASE):
-        data["mmgd_tipo"] = "Microgeracao"
-    elif re.search(r"Unidade\s+Miniger[aá]", full_text, re.IGNORECASE):
-        data["mmgd_tipo"] = "Minigeracao"
-    data["tem_gd"] = bool(data.get("gd_injetada_mes") or data.get("mmgd_tipo"))
-
-    # Consumo faturado / bruto
-    for it in data.get("itens", []):
-        if it.get("tipo") == "consumo_tusd":
-            data["consumo_faturado"] = it.get("quantidade")
-            break
-    for med in data.get("medidores", []):
-        if "Ativa" in med.get("grandeza", ""):
-            data["consumo_bruto"] = med.get("consumo")
-            break
-
-    # Historico
-    historico = []
-    for line in lines:
-        m = re.match(r"^([A-Z]{3})\s+(\d{2})\s+[l|]+\s+(\d+)\s+(\d+)$", line.strip())
-        if m:
-            historico.append({
-                "mes": m.group(1), "ano": "20" + m.group(2),
-                "consumo_kwh": int(m.group(3)), "dias": int(m.group(4)),
-            })
-    data["historico_consumo"] = historico
-
-    # Impedimento / tipo de leitura (observacoes importantes)
-    leitura_aviso = None
-    for pat, descricao in [
-        (r"impedimento\s+de\s+leitura", "Impedimento de leitura"),
-        (r"leitura\s+impedida",          "Leitura impedida"),
-        (r"leitura\s+estimada",          "Leitura estimada"),
-        (r"leitura\s+pela\s+m[eé]dia",   "Leitura pela média"),
-    ]:
-        if re.search(pat, full_text, re.IGNORECASE):
-            leitura_aviso = descricao
-            break
-    data["leitura_estimada"] = leitura_aviso is not None
-    data["leitura_aviso"] = leitura_aviso
-
-    return data
-
-
-def summarize(data):
-    print(f"\n=== {data.get('_source_file')} ({data.get('_formato', '?')}) ===")
-    print(f"Cliente: {data.get('cliente_nome')} | CPF: {data.get('cliente_cpf')}")
-    print(f"UC/Medidor: {data.get('uc')} | Cod.Cliente: {data.get('codigo_cliente')}")
-    print(f"Subgrupo: {data.get('subgrupo')} | Modalidade: {data.get('modalidade')}")
-    print(f"Periodo: {data.get('leitura_anterior')} a {data.get('leitura_atual')} ({data.get('dias_ciclo')} dias)")
-    print(f"Mes ref: {data.get('mes_ref')} | Vencimento: {data.get('data_vencimento')}")
-    print(f"NF: {data.get('nota_fiscal')} | Emissao: {data.get('data_emissao')}")
-    print(f"Bandeira: {data.get('bandeira_vigente')} | Dias: {data.get('dias_por_patamar')}")
-    print(f"Consumo bruto: {data.get('consumo_bruto')} | faturado: {data.get('consumo_faturado')}")
-    print(f"Total fatura: {data.get('total_fatura')} | A pagar: {data.get('total_a_pagar')}")
-    print(f"Itens ({len(data.get('itens', []))}):")
-    for it in data.get("itens", []):
-        print(f"   {it.get('tipo'):25s} | qtd={it.get('quantidade','-')} | val=R${it.get('valor','-')}")
-    trib = {k: v for k, v in data.get('tributos', {}).items()}
-    print(f"Tributos: {trib}")
-
-
-if __name__ == "__main__":
-    import sys
-    if len(sys.argv) < 2:
-        print("Uso: python extractor.py <fatura.pdf>")
-        sys.exit(1)
-    d = extract_fatura(sys.argv[1])
-    summarize(d)
+    return result

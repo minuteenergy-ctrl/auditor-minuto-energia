@@ -1,505 +1,189 @@
+# -*- coding: utf-8 -*-
 """
-Motor de auditoria de faturas CPFL Piratininga.
-Recalcula tarifas com gross-up, bandeira proporcional, Fio B (Lei 14.300/2022),
-Tese do Seculo (RE 574.706/STF) e valida varios itens.
+audit.py - Logica de triagem para faturas Neoenergia PE
+Faixas: OK / INVESTIGAR / DIVERGENCIA
 """
-import json
-import datetime
-from pathlib import Path
 
-DATA_DIR = Path(__file__).parent / "data"
+# Tolerancias
+TOL_ITEM   = 0.10   # R$ 0,10 para math de item (qtd x preco = valor)
+TOL_ICMS   = 0.10   # R$ 0,10 para math de ICMS/PIS/COFINS
+TOL_LEIT   = 2      # kWh de tolerancia na leitura do medidor
+TOL_SOMA_OK   = 0.10  # fracao: soma itens vs total dentro de 10% => OK
+TOL_SOMA_INV  = 0.30  # fracao: acima de 30% => DIVERGENCIA (ajuste grande)
 
-
-def _load_json(fname):
-    with open(DATA_DIR / fname, encoding="utf-8") as f:
-        return json.load(f)
-
-
-def _to_date(v):
-    if isinstance(v, datetime.date):
-        return v
-    if isinstance(v, str):
-        for fmt in ("%Y-%m-%d", "%d/%m/%Y"):
-            try:
-                return datetime.datetime.strptime(v, fmt).date()
-            except ValueError:
-                pass
-    return None
+# Campos obrigatorios minimos
+CAMPOS_CRIT = [
+    "ref_mes_ano", "vencimento", "conta_contrato",
+    "consumo_kwh_tusd_qtd", "valor_tusd", "valor_te",
+    "preco_tusd", "preco_te", "total_fatura",
+]
+CAMPOS_SEC = [
+    "cod_instalacao", "data_emissao", "nr_medidor",
+    "leitura_anterior", "leitura_atual", "cosip", "icms_aliq",
+]
 
 
-def find_tarifa(dados, rehs=None):
-    """Retorna o dict de tarifas sem tributos da REH vigente na data da fatura."""
-    if rehs is None:
-        rehs = _load_json("rehs.json")
-    data_ref = dados.get("leitura_atual") or dados.get("data_emissao")
-    if data_ref is None:
-        return None, None
-    data_ref = _to_date(data_ref)
-    subgrupo = (dados.get("subgrupo") or "B1").upper()
-    # normaliza subgrupo: B1A -> B1
-    sub_base = subgrupo[:2]
-
-    for tarifa in rehs.get("tarifas", []):
-        vi = _to_date(tarifa["vigencia_inicio"])
-        vf = _to_date(tarifa["vigencia_fim"])
-        subs = [s.upper() for s in tarifa.get("subgrupos", [])]
-        if vi and vf and vi <= data_ref <= vf and (sub_base in subs or subgrupo in subs):
-            postos = tarifa.get("postos", {})
-            posto = postos.get("Unico") or postos.get("unico") or next(iter(postos.values()), None)
-            return posto, tarifa.get("reh", "")
-    return None, None
+def _chk(val, tol):
+    """True se val <= tol, None se val indefinido."""
+    if val is None:
+        return None
+    return abs(val) <= tol
 
 
-def find_bandeira(data_ref, bandeiras=None):
-    """Retorna dict {patamar: tarifa_r$/kWh} vigente na data."""
-    if bandeiras is None:
-        bandeiras = _load_json("bandeiras.json")
-    if data_ref is None:
-        return {}
-    data_ref = _to_date(data_ref)
-    for b in bandeiras.get("tarifas", []):
-        vi = _to_date(b["vigencia_inicio"])
-        vf = _to_date(b["vigencia_fim"])
-        if vi and vf and vi <= data_ref <= vf:
-            return b.get("patamares", {})
-    return {}
-
-
-def grossup(tarifa_sem, icms, pis, cofins):
-    """Calcula tarifa com gross-up de tributos."""
-    denom = (1 - icms) * (1 - pis - cofins)
-    if denom <= 0:
-        return tarifa_sem
-    return tarifa_sem / denom
-
-
-def calcular_fio_b(data_ref, data_adesao_mmgd, fio_b_data=None):
+def auditar(r):
     """
-    Retorna fator Fio B (0.0 a 1.0) conforme Lei 14.300/2022.
-    - Pre-MMGD (adesao <= 06/01/2023): isento (fator=0) ate 2045
-    - Pos-MMGD: fator gradual por ano calendario
+    Recebe dict de parse_fatura e devolve:
+      triagem   : "OK" | "INVESTIGAR" | "DIVERGENCIA"
+      motivos   : list[str] com descricao dos problemas
+      metricas  : dict com valores calculados uteis para o Excel
     """
-    if fio_b_data is None:
-        fio_b_data = _load_json("fioB_factors.json")
-    marco = _to_date(fio_b_data.get("marco_lei", "2023-01-06"))
-    data_adesao = _to_date(data_adesao_mmgd)
-    if data_adesao is None or data_adesao <= marco:
-        return 0.0  # pre-MMGD: isento
-    data_ref = _to_date(data_ref)
-    if data_ref is None:
-        return 0.0
-    ano = str(data_ref.year)
-    fatores = fio_b_data.get("fatores_pos_mmgd", {})
-    return fatores.get(ano) or fatores.get("2029+", 1.0)
+    motivos  = []
+    metricas = {}
+    flags_div  = []   # forcam DIVERGENCIA
+    flags_inv  = []   # forcam INVESTIGAR (se nao houver DIVERGENCIA)
 
+    # ── 1. Campos criticos ausentes ──────────────────────────────────────
+    faltam_crit = [c for c in CAMPOS_CRIT if r.get(c) is None]
+    faltam_sec  = [c for c in CAMPOS_SEC  if r.get(c) is None]
+    if faltam_crit:
+        flags_div.append(f"campos criticos ausentes: {', '.join(faltam_crit)}")
+    elif faltam_sec:
+        flags_inv.append(f"campos secundarios ausentes: {', '.join(faltam_sec)}")
 
-def summary_alertas(alertas):
-    counts = {"OK": 0, "ATENÇÃO": 0, "INVESTIGAR": 0}
-    for a in alertas:
-        s = a.get("status", "OK")
-        counts[s] = counts.get(s, 0) + 1
-    return counts
-
-
-def auditar_fatura(dados, config):
-    """
-    Executa todas as verificacoes de auditoria.
-    config keys:
-      data_adesao_mmgd (str YYYY-MM-DD)
-      tem_gd (bool)
-      energia_compensada_kwh (float|None)
-      usar_cat_como_compensada (bool)
-    Retorna dict com chaves: auditado, cobrado, diferenca, alertas
-    """
-    rehs = _load_json("rehs.json")
-    bandeiras = _load_json("bandeiras.json")
-    fio_b_data = _load_json("fioB_factors.json")
-    params = _load_json("parametros.json")
-
-    tol_rs = params["tolerancias"]["valor_rs"]
-    tol_pct = params["tolerancias"]["tarifa_unit_pct"]
-    icms_sp = params["icms_sp"]
-
-    alertas = []
-    auditado = {}
-    cobrado = {}
-
-    data_ref = dados.get("leitura_atual") or dados.get("data_emissao")
-
-    # ----------------------------------------------------------------
-    # 1. Tarifa da REH
-    # ----------------------------------------------------------------
-    posto_reh, reh_id = find_tarifa(dados, rehs)
-    auditado["reh_aplicada"] = reh_id or "N/A"
-
-    trib = dados.get("tributos", {})
-    pis_alq = (trib.get("pis", {}).get("aliquota_pct") or 0) / 100
-    cofins_alq = (trib.get("cofins", {}).get("aliquota_pct") or 0) / 100
-    icms_alq = (trib.get("icms", {}).get("aliquota_pct") or icms_sp * 100) / 100
-
-    if posto_reh:
-        tusd_sem = posto_reh.get("TUSD", 0)
-        te_sem = posto_reh.get("TE", 0)
-        tusd_com = grossup(tusd_sem, icms_alq, pis_alq, cofins_alq)
-        te_com = grossup(te_sem, icms_alq, pis_alq, cofins_alq)
-        auditado["tusd_sem_trib"] = round(tusd_sem, 8)
-        auditado["te_sem_trib"] = round(te_sem, 8)
-        auditado["tusd_com_trib"] = round(tusd_com, 8)
-        auditado["te_com_trib"] = round(te_com, 8)
-    else:
-        tusd_com = te_com = tusd_sem = te_sem = 0
-        alertas.append({"cat": "REH", "descricao": "REH nao encontrada para esta data/subgrupo", "status": "INVESTIGAR"})
-
-    # ----------------------------------------------------------------
-    # 2. Verificar tarifas cobradas vs REH
-    # ----------------------------------------------------------------
-    consumo_kwh = dados.get("consumo_faturado") or 0
-    itens = dados.get("itens", [])
-
-    tusd_item = next((i for i in itens if i.get("tipo") == "consumo_tusd"), None)
-    te_item = next((i for i in itens if i.get("tipo") == "consumo_te"), None)
-
-    if tusd_item and posto_reh:
-        tar_cob = tusd_item.get("preco_unit_com_trib") or 0
-        cobrado["tusd_com_trib"] = tar_cob
-        diff_pct = abs(tar_cob - tusd_com) / tusd_com if tusd_com else 0
-        status = "OK" if diff_pct <= tol_pct else "INVESTIGAR"
-        alertas.append({
-            "cat": "Tarifa TUSD",
-            "descricao": f"TUSD cobrada R${tar_cob:.6f}/kWh vs auditada R${tusd_com:.6f}/kWh",
-            "status": status,
-            "diferenca": round(tar_cob - tusd_com, 6),
-        })
-
-    if te_item and posto_reh:
-        tar_cob = te_item.get("preco_unit_com_trib") or 0
-        cobrado["te_com_trib"] = tar_cob
-        diff_pct = abs(tar_cob - te_com) / te_com if te_com else 0
-        status = "OK" if diff_pct <= tol_pct else "INVESTIGAR"
-        alertas.append({
-            "cat": "Tarifa TE",
-            "descricao": f"TE cobrada R${tar_cob:.6f}/kWh vs auditada R${te_com:.6f}/kWh",
-            "status": status,
-            "diferenca": round(tar_cob - te_com, 6),
-        })
-
-    # ----------------------------------------------------------------
-    # 3. Bandeira proporcional
-    # ----------------------------------------------------------------
-    bandeira_tab = find_bandeira(data_ref, bandeiras)
-    dias_ciclo = dados.get("dias_ciclo") or 30
-    dias_patamar = dados.get("dias_por_patamar") or {}
-
-    # Se nao tiver dias_patamar, usa bandeira vigente por todo o ciclo
-    if not dias_patamar:
-        bv = dados.get("bandeira_vigente", "VERDE")
-        dias_patamar = {bv: dias_ciclo}
-
-    band_auditada = 0.0
-    dias_estimados = {}
-    linhas_detalhadas = []
-
-    for pat, dias in dias_patamar.items():
-        tar_band_sem = bandeira_tab.get(pat, 0)
-        kwh_pat = round((dias / dias_ciclo) * consumo_kwh, 3)
-        valor_sem = kwh_pat * tar_band_sem
-        # Aplica gross-up para obter valor com tributos (mesmo base do cobrado)
-        valor_com = grossup(valor_sem, icms_alq, pis_alq, cofins_alq) if valor_sem > 0 else 0
-        valor_pat = round(valor_com, 2)
-        band_auditada += valor_pat
-        dias_estimados[pat] = dias
-        if tar_band_sem > 0:
-            linhas_detalhadas.append(
-                f"{pat}: ({dias}/{dias_ciclo} dias) x {consumo_kwh:.0f} kWh "
-                f"= {kwh_pat:.3f} kWh x R${tar_band_sem:.5f} (sem trib) "
-                f"+ grossup = R${valor_pat:.2f}"
+    # ── 2. Math TUSD: qtd x preco = valor ───────────────────────────────
+    qtd   = r.get("consumo_kwh_tusd_qtd")
+    ptsd  = r.get("preco_tusd")
+    vtusd = r.get("valor_tusd")
+    if qtd and ptsd and vtusd:
+        calc_tusd = round(qtd * ptsd, 2)
+        dif_tusd  = abs(calc_tusd - vtusd)
+        metricas["calc_TUSD"]   = calc_tusd
+        metricas["dif_TUSD_R$"] = round(dif_tusd, 2)
+        if dif_tusd > TOL_ITEM:
+            flags_div.append(
+                f"TUSD math: {qtd}kWh x {ptsd} = {calc_tusd:.2f} != {vtusd} "
+                f"(dif={dif_tusd:.2f})"
             )
-        else:
-            linhas_detalhadas.append(
-                f"{pat}: ({dias}/{dias_ciclo} dias) x {consumo_kwh:.0f} kWh "
-                f"= {kwh_pat:.3f} kWh x R$0,00 = R$0,00"
+    else:
+        metricas["dif_TUSD_R$"] = None
+        if not faltam_crit:
+            flags_inv.append("TUSD: qtd/preco/valor ausente")
+
+    # ── 3. Math TE: qtd x preco = valor ─────────────────────────────────
+    pte  = r.get("preco_te")
+    vte  = r.get("valor_te")
+    qtde = r.get("consumo_kwh_te_qtd") or qtd   # geralmente igual ao TUSD
+    if qtde and pte and vte:
+        calc_te = round(qtde * pte, 2)
+        dif_te  = abs(calc_te - vte)
+        metricas["calc_TE"]   = calc_te
+        metricas["dif_TE_R$"] = round(dif_te, 2)
+        if dif_te > TOL_ITEM:
+            flags_div.append(
+                f"TE math: {qtde}kWh x {pte} = {calc_te:.2f} != {vte} "
+                f"(dif={dif_te:.2f})"
             )
-    band_auditada = round(band_auditada, 2)
-    auditado["bandeira_auditada"] = band_auditada
-    auditado["dias_estimados_por_patamar"] = dias_estimados
-
-    band_cobrada = sum(i.get("valor") or 0 for i in itens if i.get("tipo") == "bandeira")
-    cobrado["bandeira"] = band_cobrada
-    diff_band = abs(band_auditada - band_cobrada)
-
-    detalhes_str = " | ".join(linhas_detalhadas) if linhas_detalhadas else "Bandeira VERDE (sem adicional)"
-    alertas.append({
-        "cat": "Bandeira",
-        "descricao": (
-            f"{detalhes_str} → Total auditado R${band_auditada:.2f} | Cobrado R${band_cobrada:.2f}"
-        ),
-        "status": "OK" if diff_band <= tol_rs else "INVESTIGAR",
-        "diferenca": round(band_cobrada - band_auditada, 2),
-    })
-
-    # ----------------------------------------------------------------
-    # 4. Tributos — Tese do Seculo (PIS/COFINS base = Base ICMS - ICMS)
-    # ----------------------------------------------------------------
-    icms_val_cob = trib.get("icms", {}).get("valor") or 0
-    base_icms_cob = trib.get("icms", {}).get("base") or 0
-    base_pis_cob = trib.get("pis", {}).get("base") or 0
-    base_pis_aud = base_icms_cob - icms_val_cob
-    diff_base_pis = abs(base_pis_aud - base_pis_cob)
-    alertas.append({
-        "cat": "Tese do Seculo",
-        "descricao": f"Base PIS/COFINS cobrada R${base_pis_cob:.2f} vs auditada (Base ICMS - ICMS) R${base_pis_aud:.2f}",
-        "status": "OK" if diff_base_pis <= tol_rs else "INVESTIGAR",
-        "diferenca": round(base_pis_cob - base_pis_aud, 2),
-    })
-
-    # ----------------------------------------------------------------
-    # 5. Periodo de leitura (REN 1.000/2021: 15-45 dias)
-    # ----------------------------------------------------------------
-    dias_min = params.get("ciclo_dias_min", 15)
-    dias_max = params.get("ciclo_dias_max", 45)
-    if dias_ciclo:
-        status_dias = "OK" if dias_min <= dias_ciclo <= dias_max else "ATENÇÃO"
-        alertas.append({
-            "cat": "Periodo Leitura",
-            "descricao": f"Ciclo de {dias_ciclo} dias (REN 1.000/2021: {dias_min}-{dias_max} dias)",
-            "status": status_dias,
-            "valor": dias_ciclo,
-        })
-
-    # ----------------------------------------------------------------
-    # 6. Fio B (Lei 14.300/2022)
-    # ----------------------------------------------------------------
-    data_adesao = config.get("data_adesao_mmgd", "2022-01-01")
-    fator_fio_b = calcular_fio_b(data_ref, data_adesao, fio_b_data)
-    auditado["fator_fio_b"] = fator_fio_b
-
-    if fator_fio_b == 0:
-        alertas.append({
-            "cat": "Fio B",
-            "descricao": "Sistema pre-MMGD: isento de Fio B ate 2045 (Art. 26 Lei 14.300/2022)",
-            "status": "OK",
-        })
     else:
-        alertas.append({
-            "cat": "Fio B",
-            "descricao": f"Sistema pos-MMGD: fator Fio B = {fator_fio_b*100:.0f}% do componente TUSD-Fio B",
-            "status": "ATENÇÃO",
-            "valor": fator_fio_b,
-        })
+        metricas["dif_TE_R$"] = None
 
-    # ----------------------------------------------------------------
-    # 7. Cobranças retroativas
-    # ----------------------------------------------------------------
-    tipos_retro = ["juros_mora", "multa", "atualizacao_monetaria", "icms_cde"]
-    retro_items = [i for i in itens if i.get("tipo") in tipos_retro]
-    if retro_items:
-        total_retro = sum(i.get("valor") or 0 for i in retro_items)
-        alertas.append({
-            "cat": "Retroativo",
-            "descricao": f"Cobranças retroativas detectadas: {[i['tipo'] for i in retro_items]} — Total R${total_retro:.2f}",
-            "status": "INVESTIGAR",
-            "valor_total": round(total_retro, 2),
-        })
-
-    # ----------------------------------------------------------------
-    # 8. Total a pagar vs soma dos itens
-    # ----------------------------------------------------------------
-    total_fatura = dados.get("total_fatura") or dados.get("total_a_pagar") or 0
-    total_a_pagar = dados.get("total_a_pagar") or 0
-    diff_total = abs(total_fatura - total_a_pagar)
-    if total_fatura and total_a_pagar:
-        alertas.append({
-            "cat": "Total a Pagar",
-            "descricao": f"Total fatura R${total_fatura:.2f} vs total a pagar R${total_a_pagar:.2f}",
-            "status": "OK" if diff_total <= tol_rs else "INVESTIGAR",
-            "diferenca": round(total_fatura - total_a_pagar, 2),
-        })
-
-    # ----------------------------------------------------------------
-    # 9. GD: compensacao > injetada
-    # ----------------------------------------------------------------
-    if config.get("tem_gd"):
-        energia_comp = config.get("energia_compensada_kwh") or 0
-        injetada = dados.get("gd_injetada_mes") or 0
-        if energia_comp and injetada and energia_comp > injetada * 1.01:
-            alertas.append({
-                "cat": "GD Compensacao",
-                "descricao": f"Compensacao ({energia_comp} kWh) maior que injetada no mes ({injetada} kWh) — uso de saldo ou geracao compartilhada",
-                "status": "INVESTIGAR",
-                "compensada": energia_comp,
-                "injetada": injetada,
-            })
-        else:
-            alertas.append({
-                "cat": "GD Compensacao",
-                "descricao": "Compensacao dentro do esperado",
-                "status": "OK",
-            })
-
-    # ----------------------------------------------------------------
-    # 10. Consumo medido — verifica calculo: (leitura_atual - leitura_ant) x constante
-    #     Considera Custo de Disponibilidade (Art. 290/291 REN 1.000/2021):
-    #       Monofásico ou Bifásico 2 fios → 30 kWh
-    #       Bifásico 3 fios              → 50 kWh
-    #       Trifásico                    → 100 kWh
-    #     Se consumo medido < mínimo E faturado == mínimo → OK (custo de disponibilidade correto)
-    # ----------------------------------------------------------------
-    medidores = dados.get("medidores") or []
-    med = medidores[0] if medidores else {}
-    leit_atual_num = med.get("leitura_atual")
-    leit_ant_num   = med.get("leitura_anterior")
-    constante      = med.get("constante") or 1.0
-    consumo_fat    = dados.get("consumo_faturado") or 0
-
-    # Mínimo por tipo de fornecimento (Art. 291 REN 1.000/2021)
-    _tipo_forn = (dados.get("tipo_fornecimento") or "").lower()
-    if "trifasico" in _tipo_forn or "trifásico" in _tipo_forn:
-        _minimo_cd = 100
-    elif "bifasico" in _tipo_forn or "bifásico" in _tipo_forn:
-        _minimo_cd = 30 if ("dois" in _tipo_forn or "2 " in _tipo_forn) else 50
-    elif "monofasico" in _tipo_forn or "monofásico" in _tipo_forn:
-        _minimo_cd = 30
-    else:
-        _minimo_cd = None  # tipo não identificado — não aplica regra
-
-    if leit_atual_num is not None and leit_ant_num is not None and consumo_fat:
-        consumo_calc      = round((leit_atual_num - leit_ant_num) * constante, 1)
-        consumo_fat_arred = round(consumo_fat, 1)
-        diff_kwh          = round(consumo_calc - consumo_fat_arred, 1)
-        auditado["consumo_calculado"] = consumo_calc
-
-        # Verifica custo de disponibilidade
-        if _minimo_cd is not None and consumo_calc < _minimo_cd:
-            if consumo_fat_arred == _minimo_cd:
-                # Faturamento pelo mínimo correto
-                alertas.append({
-                    "cat": "Consumo Medidor",
-                    "descricao": (
-                        f"({leit_atual_num:.0f} − {leit_ant_num:.0f}) × {constante:.2f} "
-                        f"= {consumo_calc:.0f} kWh medido < mínimo {_minimo_cd} kWh "
-                        f"({dados.get('tipo_fornecimento', '')}) — "
-                        f"Custo de Disponibilidade aplicado corretamente (Art. 291 REN 1.000/2021)"
-                    ),
-                    "status": "OK",
-                    "diferenca": 0,
-                })
+    # ── 4. Leitura do medidor ────────────────────────────────────────────
+    lant = r.get("leitura_anterior")
+    latu = r.get("leitura_atual")
+    cte  = r.get("constante_medidor") or 1.0
+    if lant is not None and latu is not None and qtd is not None:
+        calc_leit = round((latu - lant) * cte, 1)
+        dif_leit  = abs(calc_leit - qtd)
+        metricas["calc_leit_kWh"] = calc_leit
+        metricas["dif_leit_kWh"]  = round(dif_leit, 1)
+        if dif_leit > TOL_LEIT:
+            # Verifica mínimo (Custo de Disponibilidade) por tipo de fornecimento
+            _tipo = (r.get("tipo_fornecimento") or "").lower()
+            if "trifasico" in _tipo or "trifásico" in _tipo:
+                _minimo = 100
+            elif "bifasico" in _tipo or "bifásico" in _tipo:
+                _minimo = 30 if ("dois" in _tipo or "2 " in _tipo) else 50
+            elif "monofasico" in _tipo or "monofásico" in _tipo:
+                _minimo = 30
             else:
-                # Mínimo incorreto
-                alertas.append({
-                    "cat": "Consumo Medidor",
-                    "descricao": (
-                        f"({leit_atual_num:.0f} − {leit_ant_num:.0f}) × {constante:.2f} "
-                        f"= {consumo_calc:.0f} kWh medido < mínimo {_minimo_cd} kWh "
-                        f"({dados.get('tipo_fornecimento', '')}) — "
-                        f"faturado {consumo_fat_arred:.0f} kWh, esperado {_minimo_cd} kWh "
-                        f"(Art. 291 REN 1.000/2021)"
-                    ),
-                    "status": "INVESTIGAR",
-                    "diferenca": round(consumo_fat_arred - _minimo_cd, 1),
-                })
-        else:
-            # Consumo normal — compara calculado vs faturado
-            alertas.append({
-                "cat": "Consumo Medidor",
-                "descricao": (
-                    f"({leit_atual_num:.0f} − {leit_ant_num:.0f}) × constante {constante:.2f} "
-                    f"= {consumo_calc:.0f} kWh auditado vs {consumo_fat_arred:.0f} kWh faturado (quantidade)"
-                ),
-                "status": "OK" if diff_kwh == 0 else "INVESTIGAR",
-                "diferenca": diff_kwh,
-            })
+                _minimo = None
 
-    # ----------------------------------------------------------------
-    # 11. Impedimento / estimativa de leitura (observacoes importantes)
-    # ----------------------------------------------------------------
-    if dados.get("leitura_estimada"):
-        alertas.append({
-            "cat": "Tipo de Leitura",
-            "descricao": (
-                f"Aviso nas observações da fatura: '{dados.get('leitura_aviso')}' — "
-                "o consumo pode ser estimado e não medido; verifique as leituras reais"
-            ),
-            "status": "INVESTIGAR",
-        })
+            if _minimo is not None and calc_leit < _minimo and round(qtd, 1) == _minimo:
+                # Faturamento pelo mínimo correto — não é divergência
+                metricas["custo_disponibilidade"] = _minimo
+            else:
+                flags_inv.append(
+                    f"leitura: ({latu}-{lant})x{cte}={calc_leit} "
+                    f"!= consumo={qtd} (dif={dif_leit:.1f}kWh)"
+                )
+    else:
+        metricas["dif_leit_kWh"] = None
 
-    # ----------------------------------------------------------------
-    # 12. Variacao de consumo vs historico
-    # ----------------------------------------------------------------
-    historico = dados.get("historico_consumo") or []
-    if historico and consumo_fat:
-        # Exclui o mes atual do historico para comparacao
-        mes_atual_abrev = (dados.get("mes_ref") or "")[:3].upper()
-        hist_prev = [
-            h for h in historico
-            if h.get("consumo_kwh") and h.get("mes", "").upper() != mes_atual_abrev
+    # ── 5. Math ICMS ─────────────────────────────────────────────────────
+    icms_b = r.get("icms_base")
+    icms_a = r.get("icms_aliq")
+    icms_v = r.get("icms_valor")
+    if icms_b and icms_a and icms_v:
+        calc_icms = round(icms_b * icms_a / 100, 2)
+        dif_icms  = abs(calc_icms - icms_v)
+        metricas["calc_ICMS"]   = calc_icms
+        metricas["dif_ICMS_R$"] = round(dif_icms, 2)
+        if dif_icms > TOL_ICMS:
+            flags_inv.append(
+                f"ICMS math: {icms_b}x{icms_a}%={calc_icms:.2f} != {icms_v} "
+                f"(dif={dif_icms:.2f})"
+            )
+    else:
+        metricas["dif_ICMS_R$"] = None
+
+    # ── 6. Soma dos itens vs total da fatura ─────────────────────────────
+    total = r.get("total_fatura")
+    soma  = sum(
+        v for v in [
+            r.get("valor_tusd"),
+            r.get("valor_te"),
+            r.get("valor_bandeira") or 0,
+            r.get("cosip") or 0,
+            r.get("icms_cde") or 0,
+            r.get("valor_parcelamento") or 0,
         ]
+        if v is not None
+    )
+    metricas["soma_itens_R$"] = round(soma, 2)
+    if total and soma:
+        dif_total = soma - total          # positivo = soma > total (credito nao extraido)
+        dif_pct   = abs(dif_total) / total if total else 0
+        metricas["dif_total_R$"] = round(dif_total, 2)
+        metricas["dif_total_%"]  = round(dif_pct * 100, 1)
 
-        if hist_prev:
-            # Mes imediatamente anterior (ultimo da lista filtrada)
-            h_ant = hist_prev[-1]
-            cons_ant = h_ant.get("consumo_kwh", 0)
-            mes_ant_nome = h_ant.get("mes", "mês anterior")
-            if cons_ant and cons_ant > 0:
-                var_pct = (consumo_fat - cons_ant) / cons_ant * 100
-                if var_pct > 30:
-                    st_var = "INVESTIGAR"
-                elif var_pct > 15:
-                    st_var = "ATENÇÃO"
-                else:
-                    st_var = "OK"
-                alertas.append({
-                    "cat": "Variacao Mensal",
-                    "descricao": (
-                        f"Consumo atual {consumo_fat:.0f} kWh vs {mes_ant_nome} "
-                        f"{cons_ant} kWh ({var_pct:+.1f}%)"
-                    ),
-                    "status": st_var,
-                    "diferenca": round(var_pct, 1),
-                })
+        if dif_pct > TOL_SOMA_INV:
+            flags_div.append(
+                f"soma itens R${soma:.2f} != total R${total:.2f} "
+                f"(dif={dif_total:+.2f}, {dif_pct*100:.0f}%) "
+                f"-- possivelmente ajuste/credito nao extraido"
+            )
+        elif dif_pct > TOL_SOMA_OK:
+            flags_inv.append(
+                f"soma itens R${soma:.2f} != total R${total:.2f} "
+                f"(dif={dif_total:+.2f}, {dif_pct*100:.0f}%) "
+                f"-- possivel multa/juros nao extraidos"
+            )
+    else:
+        metricas["dif_total_R$"] = None
+        metricas["dif_total_%"]  = None
 
-            # Media dos meses historicos disponiveis
-            if len(hist_prev) >= 2:
-                consumos_hist = [h["consumo_kwh"] for h in hist_prev]
-                media_hist = sum(consumos_hist) / len(consumos_hist)
-                var_media_pct = (consumo_fat - media_hist) / media_hist * 100
-                if var_media_pct > 40:
-                    st_media = "INVESTIGAR"
-                elif var_media_pct > 20:
-                    st_media = "ATENÇÃO"
-                else:
-                    st_media = "OK"
-                alertas.append({
-                    "cat": "Variacao Historica",
-                    "descricao": (
-                        f"Consumo atual {consumo_fat:.0f} kWh vs média histórica "
-                        f"{media_hist:.0f} kWh ({var_media_pct:+.1f}%) "
-                        f"— base: {len(consumos_hist)} meses"
-                    ),
-                    "status": st_media,
-                    "diferenca": round(var_media_pct, 1),
-                })
+    # ── 7. Erros de extracao ─────────────────────────────────────────────
+    if r.get("erro"):
+        flags_div.append(f"erro de extracao: {r['erro']}")
 
-    return {
-        "auditado": auditado,
-        "cobrado": cobrado,
-        "alertas": alertas,
-    }
+    # ── Triagem final ─────────────────────────────────────────────────────
+    if flags_div:
+        triagem = "DIVERGENCIA"
+        motivos = flags_div + flags_inv
+    elif flags_inv:
+        triagem = "INVESTIGAR"
+        motivos = flags_inv
+    else:
+        triagem = "OK"
+        motivos = []
 
-
-if __name__ == "__main__":
-    import sys, json
-    sys.path.insert(0, str(Path(__file__).parent))
-    from extractor import extract_fatura
-    if len(sys.argv) < 2:
-        print("Uso: python audit.py <fatura.pdf>")
-        sys.exit(1)
-    dados = extract_fatura(sys.argv[1])
-    config = {
-        "data_adesao_mmgd": "2022-01-01",
-        "tem_gd": dados.get("tem_gd", False),
-        "energia_compensada_kwh": dados.get("gd_ajuste_cat") or dados.get("gd_injetada_mes"),
-    }
-    result = auditar_fatura(dados, config)
-    for a in result["alertas"]:
-        icon = {"OK": "✅", "ATENÇÃO": "⚠️", "INVESTIGAR": "🔍"}.get(a["status"], "❓")
-        print(f"{icon} [{a['cat']}] {a['descricao']}")
+    return triagem, motivos, metricas
