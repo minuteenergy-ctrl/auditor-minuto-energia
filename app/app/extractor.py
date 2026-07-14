@@ -248,10 +248,14 @@ def _extract_formato1(lines, full_text):
         elif "ranca" in class_full:
             data["modalidade"] = "Branca"
 
-    # Tipo de fornecimento
-    m = re.search(r"(Bif[aá]sico|Monof[aá]sico|Trif[aá]sico)", full_text)
+    # Tipo de fornecimento (captura variante completa, ex: "Bifásico a 3 condutores")
+    m = re.search(
+        r"((?:Bif[aá]sico|Monof[aá]sico|Trif[aá]sico)"
+        r"(?:\s+a\s+(?:dois|três|2|3)\s+condutores)?)",
+        full_text, re.IGNORECASE
+    )
     if m:
-        data["tipo_fornecimento"] = m.group(1)
+        data["tipo_fornecimento"] = m.group(1).strip()
 
     # Aliquotas PIS/COFINS do cabecalho da tabela
     m = re.search(r"PIS/COFINS\s+([\d,]+)%\s+([\d,]+)%", full_text)
@@ -464,10 +468,14 @@ def _extract_formato2(lines, full_text):
         elif "ranca" in class_full:
             data["modalidade"] = "Branca"
 
-    # Tipo de fornecimento
-    m = re.search(r"(Bif[aá]sico|Monof[aá]sico|Trif[aá]sico)", full_text)
+    # Tipo de fornecimento (captura variante completa, ex: "Bifásico a 3 condutores")
+    m = re.search(
+        r"((?:Bif[aá]sico|Monof[aá]sico|Trif[aá]sico)"
+        r"(?:\s+a\s+(?:dois|três|2|3)\s+condutores)?)",
+        full_text, re.IGNORECASE
+    )
     if m:
-        data["tipo_fornecimento"] = m.group(1)
+        data["tipo_fornecimento"] = m.group(1).strip()
 
     # Mes ref + vencimento + total
     m = re.search(r"([A-Z]{3}/\d{4})\s+(\d{2}/\d{2}/\d{4})\s+R\$\s*([\d.,]+)", full_text)

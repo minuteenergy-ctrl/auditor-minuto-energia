@@ -338,6 +338,11 @@ def auditar_fatura(dados, config):
 
     # ----------------------------------------------------------------
     # 10. Consumo medido — verifica calculo: (leitura_atual - leitura_ant) x constante
+    #     Considera Custo de Disponibilidade (Art. 290/291 REN 1.000/2021):
+    #       Monofásico ou Bifásico 2 fios → 30 kWh
+    #       Bifásico 3 fios              → 50 kWh
+    #       Trifásico                    → 100 kWh
+    #     Se consumo medido < mínimo E faturado == mínimo → OK (custo de disponibilidade correto)
     # ----------------------------------------------------------------
     medidores = dados.get("medidores") or []
     med = medidores[0] if medidores else {}
@@ -346,20 +351,63 @@ def auditar_fatura(dados, config):
     constante      = med.get("constante") or 1.0
     consumo_fat    = dados.get("consumo_faturado") or 0
 
+    # Mínimo por tipo de fornecimento (Art. 291 REN 1.000/2021)
+    _tipo_forn = (dados.get("tipo_fornecimento") or "").lower()
+    if "trifasico" in _tipo_forn or "trifásico" in _tipo_forn:
+        _minimo_cd = 100
+    elif "bifasico" in _tipo_forn or "bifásico" in _tipo_forn:
+        _minimo_cd = 30 if ("dois" in _tipo_forn or "2 " in _tipo_forn) else 50
+    elif "monofasico" in _tipo_forn or "monofásico" in _tipo_forn:
+        _minimo_cd = 30
+    else:
+        _minimo_cd = None  # tipo não identificado — não aplica regra
+
     if leit_atual_num is not None and leit_ant_num is not None and consumo_fat:
-        consumo_calc = round((leit_atual_num - leit_ant_num) * constante, 1)
+        consumo_calc      = round((leit_atual_num - leit_ant_num) * constante, 1)
         consumo_fat_arred = round(consumo_fat, 1)
-        diff_kwh = round(consumo_calc - consumo_fat_arred, 1)
+        diff_kwh          = round(consumo_calc - consumo_fat_arred, 1)
         auditado["consumo_calculado"] = consumo_calc
-        alertas.append({
-            "cat": "Consumo Medidor",
-            "descricao": (
-                f"({leit_atual_num:.0f} − {leit_ant_num:.0f}) × constante {constante:.2f} "
-                f"= {consumo_calc:.0f} kWh auditado vs {consumo_fat_arred:.0f} kWh faturado (quantidade)"
-            ),
-            "status": "OK" if diff_kwh == 0 else "INVESTIGAR",
-            "diferenca": diff_kwh,
-        })
+
+        # Verifica custo de disponibilidade
+        if _minimo_cd is not None and consumo_calc < _minimo_cd:
+            if consumo_fat_arred == _minimo_cd:
+                # Faturamento pelo mínimo correto
+                alertas.append({
+                    "cat": "Consumo Medidor",
+                    "descricao": (
+                        f"({leit_atual_num:.0f} − {leit_ant_num:.0f}) × {constante:.2f} "
+                        f"= {consumo_calc:.0f} kWh medido < mínimo {_minimo_cd} kWh "
+                        f"({dados.get('tipo_fornecimento', '')}) — "
+                        f"Custo de Disponibilidade aplicado corretamente (Art. 291 REN 1.000/2021)"
+                    ),
+                    "status": "OK",
+                    "diferenca": 0,
+                })
+            else:
+                # Mínimo incorreto
+                alertas.append({
+                    "cat": "Consumo Medidor",
+                    "descricao": (
+                        f"({leit_atual_num:.0f} − {leit_ant_num:.0f}) × {constante:.2f} "
+                        f"= {consumo_calc:.0f} kWh medido < mínimo {_minimo_cd} kWh "
+                        f"({dados.get('tipo_fornecimento', '')}) — "
+                        f"faturado {consumo_fat_arred:.0f} kWh, esperado {_minimo_cd} kWh "
+                        f"(Art. 291 REN 1.000/2021)"
+                    ),
+                    "status": "INVESTIGAR",
+                    "diferenca": round(consumo_fat_arred - _minimo_cd, 1),
+                })
+        else:
+            # Consumo normal — compara calculado vs faturado
+            alertas.append({
+                "cat": "Consumo Medidor",
+                "descricao": (
+                    f"({leit_atual_num:.0f} − {leit_ant_num:.0f}) × constante {constante:.2f} "
+                    f"= {consumo_calc:.0f} kWh auditado vs {consumo_fat_arred:.0f} kWh faturado (quantidade)"
+                ),
+                "status": "OK" if diff_kwh == 0 else "INVESTIGAR",
+                "diferenca": diff_kwh,
+            })
 
     # ----------------------------------------------------------------
     # 11. Impedimento / estimativa de leitura (observacoes importantes)
