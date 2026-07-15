@@ -135,6 +135,30 @@ def auditar(r):
     else:
         metricas["dif_ICMS_R$"] = None
 
+    # ── 5b. SCEE — auditoria da compensação ─────────────────────────────
+    if r.get("is_scee"):
+        scee_kwh  = r.get("scee_kwh_compensados") or 0
+        comp_c    = r.get("valor_imp_som_dim_c") or 0  # negativo
+        preco_tot = (r.get("preco_tusd") or 0) + (r.get("preco_te") or 0)
+        metricas["scee_kwh_compensados"] = scee_kwh
+        metricas["is_scee"] = True
+        if scee_kwh and preco_tot:
+            comp_aud = round(scee_kwh * preco_tot, 2)
+            comp_cob = round(abs(comp_c), 2)
+            dif_scee = abs(comp_aud - comp_cob)
+            metricas["comp_scee_auditado_R$"] = comp_aud
+            metricas["comp_scee_cobrado_R$"]  = comp_cob
+            metricas["dif_scee_R$"]           = round(dif_scee, 2)
+            status_scee = "OK" if dif_scee <= TOL_ITEM else "INVESTIGAR"
+            if status_scee == "INVESTIGAR":
+                flags_inv.append(
+                    f"SCEE: {scee_kwh}kWh × R${preco_tot:.6f}/kWh "
+                    f"= R${comp_aud:.2f} auditado vs R${comp_cob:.2f} cobrado "
+                    f"(dif=R${dif_scee:.2f})"
+                )
+        else:
+            flags_inv.append("SCEE detectado mas dados insuficientes para auditar compensacao")
+
     # ── 6. Soma dos itens vs total da fatura ─────────────────────────────
     total = r.get("total_fatura")
     soma  = sum(
@@ -145,6 +169,9 @@ def auditar(r):
             r.get("cosip") or 0,
             r.get("icms_cde") or 0,
             r.get("valor_parcelamento") or 0,
+            r.get("valor_ipca") or 0,
+            r.get("valor_imp_som_dim_c") or 0,   # SCEE crédito (negativo)
+            r.get("valor_imp_som_dim_s") or 0,   # SCEE ajuste sem imposto
         ]
         if v is not None
     )
