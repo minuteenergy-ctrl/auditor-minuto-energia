@@ -696,15 +696,4 @@ def summarize(data):
     print(f"Total fatura: {data.get('total_fatura')} | A pagar: {data.get('total_a_pagar')}")
     print(f"Itens ({len(data.get('itens', []))}):")
     for it in data.get("itens", []):
-        print(f"   {it.get('tipo'):25s} | qtd={it.get('quantidade','-')} | val=R${it.get('valor','-')}")
-    trib = {k: v for k, v in data.get('tributos', {}).items()}
-    print(f"Tributos: {trib}")
-
-
-if __name__ == "__main__":
-    import sys
-    if len(sys.argv) < 2:
-        print("Uso: python extractor.py <fatura.pdf>")
-        sys.exit(1)
-    d = extract_fatura(sys.argv[1])
-    summarize(d)
+        print(f"   {it.get('tipo'):25s} | qtd={it.get('quantidade','-
