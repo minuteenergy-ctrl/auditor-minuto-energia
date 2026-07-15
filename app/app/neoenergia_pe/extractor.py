@@ -461,26 +461,38 @@ def _parse_danfe(text, tables, words=None):
                 if v and v > 0: d["total_fatura"] = v; break
             break
 
+
     # ── medidor / leituras ────────────────────────────────────────────────
     for row in main_tbl:
         cells = [str(c) if c else "" for c in row]
         if not cells or not re.match(r"^\d{7,}", cells[0].strip()): continue
         # nr_medidor: apenas o primeiro (pode haver dois separados por \n)
-        d["nr_medidor"] = cells[0].strip().split("\n")[0]
-        reading_nums = []
+        raw_med = cells[0].strip()
+        d["nr_medidor"] = raw_med.split("\n")[0]
+        dois_medidores = "\n" in raw_med
+        if dois_medidores:
+            d["nr_medidores"] = 2  # troca de medidor no ciclo
+        reading_med1 = []  # medidor antigo (linhas[0] de cada celula)
+        reading_med2 = []  # medidor novo  (linhas[1] de cada celula)
         for c in cells[1:]:
-            # celula pode conter multiplos medidores separados por \n — tomar 1a linha
-            lines = [l.strip() for l in c.split("\n")]
-            cs = lines[0]
-            if re.match(r"^[\d.]+,\d+$", cs):
-                reading_nums.append(_num(cs))
-            elif "CONSUMO" in cs.upper():
-                mm = re.search(r"([\d.,]+)", lines[-1] if len(lines) > 1 else cs)
+            parts = [l.strip() for l in c.split("\n")]
+            c1 = parts[0] if parts else ""
+            c2 = parts[1] if len(parts) > 1 else ""
+            if re.match(r"^[\d.]+,\d+$", c1):
+                reading_med1.append(_num(c1))
+            if c2 and re.match(r"^[\d.]+,\d+$", c2):
+                reading_med2.append(_num(c2))
+            elif "CONSUMO" in c1.upper():
+                mm = re.search(r"([\d.,]+)", parts[-1] if len(parts) > 1 else c1)
                 if mm: d.setdefault("consumo_medidor_kwh", _num(mm.group(1)))
-        if len(reading_nums) >= 2:
-            d["leitura_anterior"] = reading_nums[0]; d["leitura_atual"] = reading_nums[1]
-        if len(reading_nums) >= 3: d["constante_medidor"] = reading_nums[2]
-        if len(reading_nums) >= 4: d["consumo_medidor_kwh"] = reading_nums[3]
+        if len(reading_med1) >= 2:
+            d["leitura_anterior"] = reading_med1[0]; d["leitura_atual"] = reading_med1[1]
+        if len(reading_med1) >= 3: d["constante_medidor"] = reading_med1[2]
+        if len(reading_med1) >= 4: d["consumo_medidor_kwh"] = reading_med1[3]
+        # segundo medidor (novo) — leituras auditaveis quando lant > 0
+        if len(reading_med2) >= 2:
+            d["leitura_anterior_2"] = reading_med2[0]
+            d["leitura_atual_2"]    = reading_med2[1]
         break
 
     m = re.search(r"Protocolo de autoriza..o:\s*(\d+)", text, re.IGNORECASE)
