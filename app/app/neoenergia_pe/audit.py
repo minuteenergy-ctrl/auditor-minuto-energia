@@ -3,6 +3,13 @@
 audit.py - Logica de triagem para faturas Neoenergia PE
 Faixas: OK / INVESTIGAR / DIVERGENCIA
 """
+import unicodedata
+
+
+def _norm(s):
+    """Remove acentos e coloca em lower para comparacoes de tipo_fornecimento."""
+    return unicodedata.normalize("NFD", s.lower()).encode("ascii", "ignore").decode()
+
 
 TOL_ITEM   = 0.10
 TOL_ICMS   = 0.10
@@ -118,7 +125,7 @@ def auditar(r):
             metricas["calc_leit_kWh"] = calc_leit
             metricas["dif_leit_kWh"]  = round(dif_leit, 1)
             if dif_leit > TOL_LEIT:
-                _tipo = (r.get("tipo_fornecimento") or "").lower()
+                _tipo = _norm(r.get("tipo_fornecimento") or "")
                 if "trifasico" in _tipo:
                     _minimo = 100
                 elif "bifasico" in _tipo:
