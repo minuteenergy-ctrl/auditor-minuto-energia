@@ -142,7 +142,9 @@ def auditar(r):
         preco_tot = (r.get("preco_tusd") or 0) + (r.get("preco_te") or 0)
         metricas["scee_kwh_compensados"] = scee_kwh
         metricas["is_scee"] = True
-        if scee_kwh and preco_tot:
+        if scee_kwh == 0:
+            pass  # sem compensacao este mes — nada a auditar
+        elif scee_kwh and preco_tot:
             comp_aud = round(scee_kwh * preco_tot, 2)
             comp_cob = round(abs(comp_c), 2)
             dif_scee = abs(comp_aud - comp_cob)
@@ -152,12 +154,12 @@ def auditar(r):
             status_scee = "OK" if dif_scee <= TOL_ITEM else "INVESTIGAR"
             if status_scee == "INVESTIGAR":
                 flags_inv.append(
-                    f"SCEE: {scee_kwh}kWh × R${preco_tot:.6f}/kWh "
+                    f"SCEE: {scee_kwh}kWh x R${preco_tot:.6f}/kWh "
                     f"= R${comp_aud:.2f} auditado vs R${comp_cob:.2f} cobrado "
                     f"(dif=R${dif_scee:.2f})"
                 )
         else:
-            flags_inv.append("SCEE detectado mas dados insuficientes para auditar compensacao")
+            flags_inv.append("SCEE: kWh compensados presentes mas preco_tusd/preco_te ausentes")
 
     # ── 6. Soma dos itens vs total da fatura ─────────────────────────────
     total = r.get("total_fatura")
@@ -170,8 +172,12 @@ def auditar(r):
             r.get("icms_cde") or 0,
             r.get("valor_parcelamento") or 0,
             r.get("valor_ipca") or 0,
-            r.get("valor_imp_som_dim_c") or 0,   # SCEE crédito (negativo)
+            r.get("valor_imp_som_dim_c") or 0,   # SCEE credito (negativo)
             r.get("valor_imp_som_dim_s") or 0,   # SCEE ajuste sem imposto
+            r.get("valor_religacao") or 0,
+            r.get("valor_multas_nf") or 0,
+            r.get("valor_juros_nf") or 0,
+            r.get("valor_encargos_cosip") or 0,
         ]
         if v is not None
     )

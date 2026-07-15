@@ -159,7 +159,7 @@ def _parse_antigo(text, tables):
 
 # ─────────────────────────── LAYOUT DANFE ───────────────────────────────────
 
-def _parse_danfe(text, tables):
+def _parse_danfe(text, tables, words=None):
     d = {}
 
     main_tbl_idx = None
@@ -219,6 +219,23 @@ def _parse_danfe(text, tables):
     if "conta_contrato" not in d:
         m = re.search(r"(\d{10})", text)
         if m: d.setdefault("conta_contrato", m.group(1))
+
+    # cod_instalacao fallback via words (quando nao encontrado em tabelas)
+    if "cod_instalacao" not in d and words:
+        for w in words:
+            if "INSTALA" in w["text"].upper() and w["x0"] > 200:
+                ix0, itop = w["x0"], w["top"]
+                digs = sorted(
+                    [(ww["x0"], ww["text"]) for ww in words
+                     if ix0 - 25 <= ww["x0"] <= ix0 + 20
+                     and itop - 1 <= ww["top"] <= itop + 10
+                     and re.match(r"^\d+$", ww["text"])],
+                    key=lambda x: x[0]
+                )
+                code = "".join(t for _, t in digs)
+                if re.match(r"^\d{5,7}$", code):
+                    d["cod_instalacao"] = code
+                break
 
     for row in main_tbl:
         cells = [str(c) if c else "" for c in row]
@@ -368,7 +385,7 @@ def _parse_danfe(text, tables):
     d["valor_bandeira"] = _num(m.group(1)) if m else 0
 
     # ── COSIP / ICMS-CDE via texto (SEMPRE sobrescreve) ──────────────────
-    # P.b. cobre tanto "Pub." (sem acento) quanto "Pub." (com acento no PDF)
+    # P.b. cobre tanto "Pub." (sem acento) quanto com acento no PDF
     m = re.search(r"Ilum\.?\s+P.b\.?\s+Municipal\s+([\d.,]+)", text)
     if m:
         d["cosip"] = _num(m.group(1))
@@ -401,6 +418,26 @@ def _parse_danfe(text, tables):
         d["scee_kwh_compensados"] = _num(m.group(1))
         d["is_scee"] = True
 
+    # ── Religacao ─────────────────────────────────────────────────────────
+    m = re.search(r"Relig\.?\s+U\.Consumidora\s+([\d.,]+)", text)
+    if m:
+        d["valor_religacao"] = _num(m.group(1))
+
+    # ── Multas de NF (pode haver multiplas) ──────────────────────────────
+    multa_vals = re.findall(r"Multa-NF\s+\S+\s+([\d.,]+)", text)
+    if multa_vals:
+        d["valor_multas_nf"] = round(sum(_num(v) or 0 for v in multa_vals), 2)
+
+    # ── Juros de NF (pode haver multiplos) ───────────────────────────────
+    juros_nf_vals = re.findall(r"Juros-NF\s+\S+\s+([\d.,]+)", text)
+    if juros_nf_vals:
+        d["valor_juros_nf"] = round(sum(_num(v) or 0 for v in juros_nf_vals), 2)
+
+    # ── Encargos COSIP (JurosCOSIP, IPCACOSIP, Pla.JuroCOSIP) ───────────
+    cosip_enc_vals = re.findall(r"(?:Juros|IPCA|Pla\.Juro)COSIP\s+([\d.,]+)", text)
+    if cosip_enc_vals:
+        d["valor_encargos_cosip"] = round(sum(_num(v) or 0 for v in cosip_enc_vals), 2)
+
     # ── Tributos via texto (SEMPRE sobrescreve) ───────────────────────────
     m = re.search(r"\bPIS\b\s+([\d,]+)\s+([\d,]+)\s+([\d,]+)", text)
     if m:
@@ -428,14 +465,17 @@ def _parse_danfe(text, tables):
     for row in main_tbl:
         cells = [str(c) if c else "" for c in row]
         if not cells or not re.match(r"^\d{7,}", cells[0].strip()): continue
-        d["nr_medidor"] = cells[0].strip()
+        # nr_medidor: apenas o primeiro (pode haver dois separados por \n)
+        d["nr_medidor"] = cells[0].strip().split("\n")[0]
         reading_nums = []
         for c in cells[1:]:
-            cs = c.strip()
+            # celula pode conter multiplos medidores separados por \n — tomar 1a linha
+            lines = [l.strip() for l in c.split("\n")]
+            cs = lines[0]
             if re.match(r"^[\d.]+,\d+$", cs):
                 reading_nums.append(_num(cs))
             elif "CONSUMO" in cs.upper():
-                mm = re.search(r"([\d.,]+)$", cs, re.MULTILINE)
+                mm = re.search(r"([\d.,]+)", lines[-1] if len(lines) > 1 else cs)
                 if mm: d.setdefault("consumo_medidor_kwh", _num(mm.group(1)))
         if len(reading_nums) >= 2:
             d["leitura_anterior"] = reading_nums[0]; d["leitura_atual"] = reading_nums[1]
@@ -465,7 +505,8 @@ def parse_fatura(pdf_path):
             tables = page.extract_tables()
             if "DANFE" in text:
                 result["layout"] = "DANFE"
-                fields = _parse_danfe(text, tables)
+                words = page.extract_words()
+                fields = _parse_danfe(text, tables, words)
             elif "NOTA FISCAL | FATURA" in text:
                 result["layout"] = "ANTIGO"
                 fields = _parse_antigo(text, tables)
