@@ -381,8 +381,10 @@ def _parse_danfe(text, tables, words=None):
     if "bandeira_cor" not in d:
         m = re.search(r"bandeira em vigor.*?(verde|amarela|vermelha|escassez|cinza)", text, re.IGNORECASE)
         if m: d["bandeira_cor"] = m.group(1).upper()
-    m = re.search(r"Acr.s\.?\s+Band(?:eira)?\.?\s+\w+\s+([\d,]+)", text)
-    d["valor_bandeira"] = _num(m.group(1)) if m else 0
+    # Captura TODAS as linhas de bandeira (pode haver 2 quando o ciclo cruza troca de bandeira)
+    # Cobre: "Acrés. Band. AMARELA", "Acrés.Bd.VERMELHA-P2", "Acréscimo Bandeira VERDE", etc.
+    band_vals = re.findall(r"Acr[eé]s\.?\s+Bd?\.?\s+\S+\s+([\d,]+)", text)
+    d["valor_bandeira"] = round(sum(_num(v) or 0 for v in band_vals), 2) if band_vals else 0
 
     # ── COSIP / ICMS-CDE via texto (SEMPRE sobrescreve) ──────────────────
     # P.b. cobre tanto "Pub." (sem acento) quanto com acento no PDF
