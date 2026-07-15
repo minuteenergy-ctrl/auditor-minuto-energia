@@ -383,7 +383,7 @@ def _parse_danfe(text, tables, words=None):
         if m: d["bandeira_cor"] = m.group(1).upper()
     # Captura TODAS as linhas de bandeira (pode haver 2 quando o ciclo cruza troca de bandeira)
     # Cobre: "Acrés. Band. AMARELA", "Acrés.Bd.VERMELHA-P2", "Acréscimo Bandeira VERDE", etc.
-    band_vals = re.findall(r"Acr[eé]s\.?\s+Bd?\.?\s+\S+\s+([\d,]+)", text)
+    band_vals = re.findall(r"Acr[eé]s\.?\s*(?:Band|Bd)\.?\s*\S+\s+([\d,]+)", text)
     d["valor_bandeira"] = round(sum(_num(v) or 0 for v in band_vals), 2) if band_vals else 0
 
     # ── COSIP / ICMS-CDE via texto (SEMPRE sobrescreve) ──────────────────
@@ -532,3 +532,4 @@ def parse_fatura(pdf_path):
     except Exception as e:
         result["erro"] = str(e)
     return result
+
