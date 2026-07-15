@@ -497,26 +497,23 @@ def _parse_danfe(text, tables):
         d["preco_te"]           = _num(m.group(2))
         d["valor_te"]           = _num(m.group(3))
 
-    # Bandeira via texto (fallback)
+    # Bandeira via texto (SEMPRE sobrescreve — col_valor pode sangrar para tributos)
     if "bandeira_cor" not in d:
         m = re.search(r"bandeira em vigor.*?(verde|amarela|vermelha|escassez|cinza)",
                       text, re.IGNORECASE)
         if m:
             d["bandeira_cor"] = m.group(1).upper()
-    if "valor_bandeira" not in d:
-        m = re.search(r"Acrés\.?\s+Band(?:eira)?\.?\s+\w+\s+([\d,]+)", text)
-        if m:
-            d["valor_bandeira"] = _num(m.group(1))
+    m = re.search(r"Acrés\.?\s+Band(?:eira)?\.?\s+\w+\s+([\d,]+)", text)
+    d["valor_bandeira"] = _num(m.group(1)) if m else 0
 
-    # COSIP / ICMS-CDE fallback via texto
-    if "cosip" not in d:
-        m = re.search(r"Ilum\.?\s+P[úu]b\.?\s+Municipal\s+([\d.,]+)", text)
-        if m:
-            d["cosip"] = _num(m.group(1))
-    if "icms_cde" not in d:
-        m = re.search(r"ICMS-CDE\s+\S+\s+([\d.,]+)", text)
-        if m:
-            d["icms_cde"] = _num(m.group(1))
+    # COSIP / ICMS-CDE via texto (SEMPRE sobrescreve)
+    m = re.search(r"Ilum\.?\s+P[úu]b\.?\s+Municipal\s+([\d.,]+)", text)
+    if m:
+        d["cosip"] = _num(m.group(1))
+    # ICMS-CDE: somar TODAS as linhas (pode haver múltiplas NFs)
+    icms_cde_vals = re.findall(r"ICMS-CDE\s+\S+\s+([\d.,]+)", text)
+    if icms_cde_vals:
+        d["icms_cde"] = round(sum(_num(v) or 0 for v in icms_cde_vals), 2)
 
     # Parcelamento (cobrança de débito anterior)
     if "valor_parcelamento" not in d:
