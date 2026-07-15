@@ -96,10 +96,25 @@ def auditar(r):
         metricas["calc_leit_kWh"] = calc_leit
         metricas["dif_leit_kWh"]  = round(dif_leit, 1)
         if dif_leit > TOL_LEIT:
-            flags_inv.append(
-                f"leitura: ({latu}-{lant})x{cte}={calc_leit} "
-                f"!= consumo={qtd} (dif={dif_leit:.1f}kWh)"
-            )
+            # Verifica mínimo (Custo de Disponibilidade) por tipo de fornecimento
+            _tipo = (r.get("tipo_fornecimento") or "").lower()
+            if "trifasico" in _tipo or "trifásico" in _tipo:
+                _minimo = 100
+            elif "bifasico" in _tipo or "bifásico" in _tipo:
+                _minimo = 30 if ("dois" in _tipo or "2 " in _tipo) else 50
+            elif "monofasico" in _tipo or "monofásico" in _tipo:
+                _minimo = 30
+            else:
+                _minimo = None
+
+            if _minimo is not None and calc_leit < _minimo and round(qtd, 1) == _minimo:
+                # Faturamento pelo mínimo correto — não é divergência
+                metricas["custo_disponibilidade"] = _minimo
+            else:
+                flags_inv.append(
+                    f"leitura: ({latu}-{lant})x{cte}={calc_leit} "
+                    f"!= consumo={qtd} (dif={dif_leit:.1f}kWh)"
+                )
     else:
         metricas["dif_leit_kWh"] = None
 
@@ -129,6 +144,7 @@ def auditar(r):
             r.get("valor_bandeira") or 0,
             r.get("cosip") or 0,
             r.get("icms_cde") or 0,
+            r.get("valor_parcelamento") or 0,
         ]
         if v is not None
     )

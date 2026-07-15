@@ -211,6 +211,12 @@ def _parse_antigo(text, tables):
     if m:
         d["classificacao"] = m.group(1).strip()
 
+    # Tipo de fornecimento
+    if "tipo_fornecimento" not in d:
+        m = re.search(r"((?:Bif[aá]sico|Monof[aá]sico|Trif[aá]sico)\b[^,\n]*)", text, re.IGNORECASE)
+        if m:
+            d["tipo_fornecimento"] = m.group(1).strip()
+
     return d
 
 
@@ -241,10 +247,9 @@ def _parse_danfe(text, tables):
                     cs = c.strip()
                     if "QUANT." in cs:
                         col_quant = i
-                    elif "PREÇO UNIT." in cs or "PRECO UNIT." in cs:
+                    elif "PREÇO UNIT" in cs or "PRECO UNIT" in cs:
                         col_preco = i
-                    elif re.match(r"VALOR\s*\n\s*\(R\$\)", cs):
-                        # Coluna de valor total dos itens: "VALOR\n(R$)"
+                    elif re.match(r"VALOR\s*\n?\s*\(R\$\)", cs) or re.match(r"\.\s*VALOR\s*\n", cs):
                         col_valor = i
                     elif "TARIFA" in cs and "UNIT" in cs:
                         col_tarifa = i
@@ -255,7 +260,6 @@ def _parse_danfe(text, tables):
                     elif "ALÍQUOTA" in cs and "%" in cs and i > col_trib_lbl:
                         col_trib_alq = i
                     elif "VALOR" in cs and i > col_trib_lbl:
-                        # Coluna de valor dos tributos: "VALOR (R$)"
                         col_trib_val = i
                 break
         if main_tbl_idx is not None:
@@ -282,7 +286,6 @@ def _parse_danfe(text, tables):
 
     # Fallback instalação via texto (garbled)
     if "cod_instalacao" not in d:
-        # Extrai dígitos isolados entre "CÓDIGO DA INSTALAÇÃO" e "CANDEIAS" no texto
         m_start = text.find("CÓDIGO DA INSTALAÇÃO")
         m_end   = text.find("CANDEIAS/PRAZERES")
         if m_start >= 0 and m_end > m_start:
@@ -347,6 +350,30 @@ def _parse_danfe(text, tables):
                     if m:
                         d["data_proxima_leitura"] = m.group(1)
 
+    # ── cabeçalho extra: busca em todas as tabelas (pode estar fora da main_tbl) ─
+    for _tbl in tables:
+        for _row in _tbl:
+            for _cell in _row:
+                if not _cell:
+                    continue
+                cs = str(_cell)
+                if "REF:M" in cs and "ref_mes_ano" not in d:
+                    m = re.search(r"(\d{2}/\d{4})", cs)
+                    if m:
+                        d["ref_mes_ano"] = m.group(1)
+                if "VENCIMENTO" in cs and "DATA" not in cs and "vencimento" not in d:
+                    m = re.search(r"(\d{2}/\d{2}/\d{4})", cs)
+                    if m:
+                        d["vencimento"] = m.group(1)
+                if "TOTAL A PAGAR" in cs and "total_a_pagar" not in d:
+                    m = re.search(r"([\d.,]+)\s*$", cs.strip())
+                    if m:
+                        d["total_a_pagar"] = _num(m.group(1))
+                if ("DATA DE EMISSÃO" in cs or "DATA DE EMISSAO" in cs) and "data_emissao" not in d:
+                    m = re.search(r"(\d{2}/\d{2}/\d{4})", cs)
+                    if m:
+                        d["data_emissao"] = m.group(1)
+
     # Fallbacks via texto
     if "ref_mes_ano" not in d:
         m = re.search(r"REF:M[EÊ]S/ANO\s*\n?\s*(\d{2}/\d{4})", text)
@@ -394,10 +421,6 @@ def _parse_danfe(text, tables):
             d["preco_te"] = _num(precos[1])
 
         # Valores dos itens: primeiro=TUSD, segundo=TE, terceiro=Bandeira ou COSIP
-        # Filtrar valores positivos (ignorar negativos que são créditos)
-        vals_raw = re.findall(r"([\d]+,\d{2})(?:-)?", valor_cell)
-        # Separar positivos dos negativos
-        all_val_tokens = re.finditer(r"([\d.,]+)(-)?(?=\n|$| )", valor_cell)
         vals_pos = []
         vals_neg = []
         for vm in re.finditer(r"([\d]+,\d{2})(-?)", valor_cell, re.MULTILINE):
@@ -436,7 +459,7 @@ def _parse_danfe(text, tables):
         if len(tarifas) > 1:
             d["tarifa_te_sem_trib"] = _num(tarifas[1])
 
-        # Tributos consolidados (PIS/COFINS/ICMS)
+        # Tributos consolidados (PIS/COFINS/ICMS) via tabela
         trib_lbl  = cells[col_trib_lbl]  if col_trib_lbl  < len(cells) else ""
         trib_base = cells[col_trib_base] if col_trib_base < len(cells) else ""
         trib_alq  = cells[col_trib_alq]  if col_trib_alq  < len(cells) else ""
@@ -461,12 +484,29 @@ def _parse_danfe(text, tables):
 
         break  # primeira linha de itens basta
 
+    # ── TUSD/TE via texto (sempre sobrescreve — coluna da tabela pode sangrar) ─
+    # Formato no texto: "Consumo-TUSD kWh {qtd} {preco_com_trib} {valor} ..."
+    m = re.search(r"Consumo-TUSD\s+kWh\s+([\d,]+)\s+([\d,]+)\s+([\d,]+)", text)
+    if m:
+        d["consumo_kwh_tusd_qtd"] = _num(m.group(1))
+        d["preco_tusd"]           = _num(m.group(2))
+        d["valor_tusd"]           = _num(m.group(3))
+    m = re.search(r"Consumo-TE\s+kWh\s+([\d,]+)\s+([\d,]+)\s+([\d,]+)", text)
+    if m:
+        d["consumo_kwh_te_qtd"] = _num(m.group(1))
+        d["preco_te"]           = _num(m.group(2))
+        d["valor_te"]           = _num(m.group(3))
+
     # Bandeira via texto (fallback)
     if "bandeira_cor" not in d:
         m = re.search(r"bandeira em vigor.*?(verde|amarela|vermelha|escassez|cinza)",
                       text, re.IGNORECASE)
         if m:
             d["bandeira_cor"] = m.group(1).upper()
+    if "valor_bandeira" not in d:
+        m = re.search(r"Acrés\.?\s+Band(?:eira)?\.?\s+\w+\s+([\d,]+)", text)
+        if m:
+            d["valor_bandeira"] = _num(m.group(1))
 
     # COSIP / ICMS-CDE fallback via texto
     if "cosip" not in d:
@@ -478,17 +518,38 @@ def _parse_danfe(text, tables):
         if m:
             d["icms_cde"] = _num(m.group(1))
 
+    # Parcelamento (cobrança de débito anterior)
+    if "valor_parcelamento" not in d:
+        m = re.search(r"Parc\d+/\d+\s+\S+\s+([\d.,]+)", text)
+        if m:
+            d["valor_parcelamento"] = _num(m.group(1))
+
+    # ── Tributos via texto (sempre sobrescreve — colunas de alíquota truncam) ──
+    m = re.search(r"\bPIS\b\s+([\d,]+)\s+([\d,]+)\s+([\d,]+)", text)
+    if m:
+        d["pis_base"]  = _num(m.group(1))
+        d["pis_aliq"]  = _num(m.group(2))
+        d["pis_valor"] = _num(m.group(3))
+    m = re.search(r"\bCOFINS\b\s+([\d,]+)\s+([\d,]+)\s+([\d,]+)", text)
+    if m:
+        d["cofins_base"]  = _num(m.group(1))
+        d["cofins_aliq"]  = _num(m.group(2))
+        d["cofins_valor"] = _num(m.group(3))
+    m = re.search(r"\bICMS\b\s+([\d,]+)\s+([\d,]+)\s+([\d,]+)", text)
+    if m:
+        d["icms_base"]  = _num(m.group(1))
+        d["icms_aliq"]  = _num(m.group(2))
+        d["icms_valor"] = _num(m.group(3))
+
     # ── total da fatura ───────────────────────────────────────────────────
     for row in main_tbl:
         cells = [str(c) if c else "" for c in row]
         if cells and cells[0].strip() == "TOTAL":
-            # Total está na coluna col_valor
             if col_valor < len(cells) and cells[col_valor].strip():
                 v = _num(cells[col_valor].strip())
                 if v:
                     d["total_fatura"] = v
                     break
-            # Fallback: primeiro valor numérico positivo após "TOTAL"
             for c in cells[1:]:
                 v = _num(c.strip())
                 if v and v > 0:
@@ -502,14 +563,12 @@ def _parse_danfe(text, tables):
         if not cells or not re.match(r"^\d{7,}", cells[0].strip()):
             continue
         d["nr_medidor"] = cells[0].strip()
-        # Leituras são valores numéricos em ordem
         reading_nums = []
         for c in cells[1:]:
             cs = c.strip()
             if re.match(r"^[\d.]+,\d+$", cs):
                 reading_nums.append(_num(cs))
             elif "CONSUMO" in cs.upper():
-                # Às vezes consumo está no mesmo cell que "CONSUMO\nkWh Cob\n409,00"
                 m = re.search(r"([\d.,]+)$", cs, re.MULTILINE)
                 if m:
                     d.setdefault("consumo_medidor_kwh", _num(m.group(1)))
@@ -526,6 +585,12 @@ def _parse_danfe(text, tables):
     m = re.search(r"Protocolo de autoriza[çc][aã]o:\s*(\d+)", text)
     if m:
         d["nr_nota_fiscal"] = m.group(1)
+
+    # Tipo de fornecimento
+    if "tipo_fornecimento" not in d:
+        m = re.search(r"TIPO DE FORNECIMENTO[:\s]+(.+?)(?:\n|$)", text, re.IGNORECASE)
+        if m:
+            d["tipo_fornecimento"] = m.group(1).strip()
 
     return d
 
@@ -567,6 +632,3 @@ def parse_fatura(pdf_path):
         result["erro"] = str(e)
 
     return result
-
-
-# ─
