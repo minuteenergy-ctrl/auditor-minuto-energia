@@ -24,7 +24,7 @@ CAMPOS_CRIT = [
 ]
 CAMPOS_SEC = [
     "cod_instalacao", "data_emissao", "nr_medidor",
-    "leitura_anterior", "leitura_atual", "cosip", "icms_aliq",
+    "leitura_anterior", "leitura_atual", "icms_aliq",
 ]
 
 
@@ -125,23 +125,34 @@ def auditar(r):
             metricas["calc_leit_kWh"] = calc_leit
             metricas["dif_leit_kWh"]  = round(dif_leit, 1)
             if dif_leit > TOL_LEIT:
-                _tipo = _norm(r.get("tipo_fornecimento") or "")
-                if "trifasico" in _tipo:
-                    _minimo = 100
-                elif "bifasico" in _tipo:
-                    _minimo = 30 if ("dois" in _tipo or "2 " in _tipo) else 50
-                elif "monofasico" in _tipo:
-                    _minimo = 30
+                # Verificar se a diferenca e a compensacao GDI com deducao direta
+                # (REN 1000/2021 / Lei 14.300/2022): distribuidora subtrai kWh compensados
+                # do consumo medido antes de faturar, sem linha de credito separada.
+                scee_kwh_gdi = (r.get("scee_kwh_compensados") or 0) if r.get("is_scee") else 0
+                comp_c_gdi   = r.get("valor_imp_som_dim_c") or 0
+                if (scee_kwh_gdi > 0
+                        and abs(comp_c_gdi) < TOL_ITEM
+                        and abs(dif_leit - scee_kwh_gdi) <= TOL_LEIT):
+                    metricas["gdi_deducao_direta"]      = True
+                    metricas["gdi_scee_kwh_verificado"] = round(dif_leit, 2)
                 else:
-                    _minimo = None
+                    _tipo = _norm(r.get("tipo_fornecimento") or "")
+                    if "trifasico" in _tipo:
+                        _minimo = 100
+                    elif "bifasico" in _tipo:
+                        _minimo = 30 if ("dois" in _tipo or "2 " in _tipo) else 50
+                    elif "monofasico" in _tipo:
+                        _minimo = 30
+                    else:
+                        _minimo = None
 
-                if _minimo is not None and calc_leit < _minimo and round(qtd, 1) == _minimo:
-                    metricas["custo_disponibilidade"] = _minimo
-                else:
-                    flags_inv.append(
-                        f"leitura: ({latu}-{lant})x{cte}={calc_leit} "
-                        f"!= consumo={qtd} (dif={dif_leit:.1f}kWh)"
-                    )
+                    if _minimo is not None and calc_leit < _minimo and round(qtd, 1) == _minimo:
+                        metricas["custo_disponibilidade"] = _minimo
+                    else:
+                        flags_inv.append(
+                            f"leitura: ({latu}-{lant})x{cte}={calc_leit} "
+                            f"!= consumo={qtd} (dif={dif_leit:.1f}kWh)"
+                        )
         else:
             metricas["dif_leit_kWh"] = None
 
@@ -169,7 +180,13 @@ def auditar(r):
         preco_tot = (r.get("preco_tusd") or 0) + (r.get("preco_te") or 0)
         metricas["scee_kwh_compensados"] = scee_kwh
         metricas["is_scee"] = True
-        if scee_kwh == 0:
+        if metricas.get("gdi_deducao_direta"):
+            # GDI com deducao direta (REN 1000/2021 / Lei 14.300/2022):
+            # Math verificado: consumo_faturado = consumo_medido - scee_kwh_compensados (sec.4)
+            # TUSD e TE auditados sobre consumo_faturado (secs. 2 e 3).
+            # Valor implicito da compensacao registrado apenas como metrica.
+            metricas["gdi_comp_monetario_equiv_R$"] = round(scee_kwh * preco_tot, 2)
+        elif scee_kwh == 0:
             pass
         elif scee_kwh and preco_tot:
             comp_aud = round(scee_kwh * preco_tot, 2)
@@ -244,3 +261,4 @@ def auditar(r):
         motivos = []
 
     return triagem, motivos, metricas
+
