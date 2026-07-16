@@ -120,39 +120,61 @@ def auditar(r):
         lant = r.get("leitura_anterior")
         latu = r.get("leitura_atual")
         if lant is not None and latu is not None and qtd is not None:
-            calc_leit = round((latu - lant) * cte, 1)
-            dif_leit  = abs(calc_leit - qtd)
-            metricas["calc_leit_kWh"] = calc_leit
-            metricas["dif_leit_kWh"]  = round(dif_leit, 1)
-            if dif_leit > TOL_LEIT:
-                # Verificar se a diferenca e a compensacao GDI com deducao direta
-                # (REN 1000/2021 / Lei 14.300/2022): distribuidora subtrai kWh compensados
-                # do consumo medido antes de faturar, sem linha de credito separada.
-                scee_kwh_gdi = (r.get("scee_kwh_compensados") or 0) if r.get("is_scee") else 0
-                comp_c_gdi   = r.get("valor_imp_som_dim_c") or 0
-                if (scee_kwh_gdi > 0
-                        and abs(comp_c_gdi) < TOL_ITEM
-                        and abs(dif_leit - scee_kwh_gdi) <= TOL_LEIT):
-                    metricas["gdi_deducao_direta"]      = True
-                    metricas["gdi_scee_kwh_verificado"] = round(dif_leit, 2)
+            if latu < lant:
+                # Virada de medidor: leitura ultrapassou o limite maximo e reiniciou
+                # Capacidade inferida pelo numero de digitos de lant (sem suposicao quando lant >= 80% da capacidade)
+                _capacidade = 10 ** len(str(int(lant)))
+                if lant >= _capacidade * 0.8:
+                    calc_leit = round((_capacidade - lant + latu) * cte, 1)
+                    metricas["virada_medidor"]     = True
+                    metricas["capacidade_medidor"] = int(_capacidade)
                 else:
-                    _tipo = _norm(r.get("tipo_fornecimento") or "")
-                    if "trifasico" in _tipo:
-                        _minimo = 100
-                    elif "bifasico" in _tipo:
-                        _minimo = 30 if ("dois" in _tipo or "2 " in _tipo) else 50
-                    elif "monofasico" in _tipo:
-                        _minimo = 30
-                    else:
-                        _minimo = None
+                    metricas["virada_medidor"]     = True
+                    metricas["capacidade_medidor"] = None
+                    flags_inv.append(
+                        f"leitura: virada de medidor (latu={latu} < lant={lant}) "
+                        f"-- capacidade nao determinavel, verificar manualmente"
+                    )
+                    calc_leit = None
+            else:
+                calc_leit = round((latu - lant) * cte, 1)
 
-                    if _minimo is not None and calc_leit < _minimo and round(qtd, 1) == _minimo:
-                        metricas["custo_disponibilidade"] = _minimo
+            if calc_leit is not None:
+                dif_leit  = abs(calc_leit - qtd)
+                metricas["calc_leit_kWh"] = calc_leit
+                metricas["dif_leit_kWh"]  = round(dif_leit, 1)
+                if dif_leit > TOL_LEIT:
+                    # Verificar se a diferenca e a compensacao GDI com deducao direta
+                    # (REN 1000/2021 / Lei 14.300/2022): distribuidora subtrai kWh compensados
+                    # do consumo medido antes de faturar, sem linha de credito separada.
+                    scee_kwh_gdi = (r.get("scee_kwh_compensados") or 0) if r.get("is_scee") else 0
+                    comp_c_gdi   = r.get("valor_imp_som_dim_c") or 0
+                    if (scee_kwh_gdi > 0
+                            and abs(comp_c_gdi) < TOL_ITEM
+                            and abs(dif_leit - scee_kwh_gdi) <= TOL_LEIT):
+                        metricas["gdi_deducao_direta"]      = True
+                        metricas["gdi_scee_kwh_verificado"] = round(dif_leit, 2)
                     else:
-                        flags_inv.append(
-                            f"leitura: ({latu}-{lant})x{cte}={calc_leit} "
-                            f"!= consumo={qtd} (dif={dif_leit:.1f}kWh)"
-                        )
+                        _tipo = _norm(r.get("tipo_fornecimento") or "")
+                        if "trifasico" in _tipo:
+                            _minimo = 100
+                        elif "bifasico" in _tipo:
+                            _minimo = 30 if ("dois" in _tipo or "2 " in _tipo) else 50
+                        elif "monofasico" in _tipo:
+                            _minimo = 30
+                        else:
+                            _minimo = None
+
+                        if _minimo is not None and calc_leit < _minimo and round(qtd, 1) == _minimo:
+                            metricas["custo_disponibilidade"] = _minimo
+                        else:
+                            flags_inv.append(
+                                f"leitura: ({latu}-{lant})x{cte}={calc_leit} "
+                                f"!= consumo={qtd} (dif={dif_leit:.1f}kWh)"
+                            )
+            else:
+                metricas["calc_leit_kWh"] = None
+                metricas["dif_leit_kWh"]  = None
         else:
             metricas["dif_leit_kWh"] = None
 
@@ -261,4 +283,3 @@ def auditar(r):
         motivos = []
 
     return triagem, motivos, metricas
-
