@@ -46,12 +46,14 @@ def _parse_antigo(text, tables):
         if "CONTA CONTRATO" in cell:
             m = re.search(r"CONTA CONTRATO\s*\n?\s*(\d+)", cell)
             if m: d["conta_contrato"] = m.group(1)
-            m = re.search(r"N[oO]\s+DO\s+CLIENTE\s*\n?\s*(\d+)", cell)
+            m = re.search(r"N.?\s+DO\s+CLIENTE\s*\n?\s*(\d+)", cell)
             if m: d["cod_cliente"] = m.group(1)
-            m = re.search(r"N[oO]\s+DA\s+INSTALA..\s*\n?\s*(\d+)", cell)
+            # Nº DA INSTALAÇÃO ou No DA INSTALACAO (o º nao esta em [oO])
+            m = re.search(r"INSTALA\S*\s*\n?\s*(\d{5,7})", cell)
             if m: d["cod_instalacao"] = m.group(1)
         if "EMISS" in cell.upper():
-            m = re.search(r"EMISS..\s*\n?\s*(\d{2}/\d{2}/\d{4})", cell)
+            # "EMISSÃO DA NOTA FISCAL\n18/03/2022" — ignora o texto entre o label e a data
+            m = re.search(r"EMISS[^\n]*\n\s*(\d{2}/\d{2}/\d{4})", cell)
             if m: d["data_emissao"] = m.group(1)
             m = re.search(r"N.MERO DA NOTA FISCAL\s*\n?\s*(\d+)", cell)
             if m: d["nr_nota_fiscal"] = m.group(1)
@@ -91,15 +93,15 @@ def _parse_antigo(text, tables):
                 if m: d["bandeira_cor"] = m.group(1).upper()
             for i, c in enumerate(cells):
                 if re.search(r"\d+,\d{7}", c) and "consumo_kwh_tusd_qtd" not in d:
-                    qtds = re.findall(r"(\d+,\d+)", c)
+                    qtds = re.findall(r"([\d.]+,\d+)", c)
                     if qtds: d["consumo_kwh_tusd_qtd"] = _num(qtds[0])
                     if len(qtds) > 1: d["consumo_kwh_te_qtd"] = _num(qtds[1])
                 if re.match(r"^0,\d{7,}\n0,\d{7,}\s*$", c.strip()) and "preco_tusd" not in d:
                     precos = re.findall(r"(0,\d+)", c)
                     if precos: d["preco_tusd"] = _num(precos[0])
                     if len(precos) > 1: d["preco_te"] = _num(precos[1])
-                if re.match(r"^[\d]+,\d{2}\n[\d]+,\d{2}", c.strip()) and "valor_tusd" not in d:
-                    vals = re.findall(r"([\d]+,\d{2})", c)
+                if re.match(r"^[\d.]+,\d{2}\n[\d.]+,\d{2}", c.strip()) and "valor_tusd" not in d:
+                    vals = re.findall(r"([\d.]+,\d{2})", c)
                     if len(vals) >= 2:
                         d["valor_tusd"] = _num(vals[0])
                         d["valor_te"]   = _num(vals[1])
@@ -184,8 +186,6 @@ def _parse_danfe(text, tables, words=None):
                         col_quant = i
                     elif "PRECO UNIT" in cs.upper() or "PRECO UNIT" in cs.upper():
                         col_preco = i
-                    elif re.match(r"VALOR\s*\n?\s*\(R\$\)", cs) or re.match(r"\.\s*VALOR\s*\n", cs):
-                        col_valor = i
                     elif "TARIFA" in cs and "UNIT" in cs:
                         col_tarifa = i
                     elif "T RIBUTO" in cs or cs.strip() == "TRIBUTO":
@@ -196,6 +196,8 @@ def _parse_danfe(text, tables, words=None):
                         col_trib_alq = i
                     elif "VALOR" in cs and i > col_trib_lbl:
                         col_trib_val = i
+                    elif re.match(r"VALOR\s*\n?\s*\(R\$\)", cs) or re.match(r"\.\s*VALOR\s*\n", cs):
+                        col_valor = i
                 break
         if main_tbl_idx is not None:
             break
@@ -317,7 +319,7 @@ def _parse_danfe(text, tables, words=None):
         valor_cell = cells[col_valor] if col_valor < len(cells) else ""
         tarif_cell = cells[col_tarifa] if col_tarifa < len(cells) else ""
 
-        qtds = re.findall(r"([\d]+,\d{2})", quant_cell)
+        qtds = re.findall(r"([\d.]+,\d{2})", quant_cell)
         if qtds: d["consumo_kwh_tusd_qtd"] = _num(qtds[0])
         if len(qtds) > 1: d["consumo_kwh_te_qtd"] = _num(qtds[1])
 
@@ -326,7 +328,7 @@ def _parse_danfe(text, tables, words=None):
         if len(precos) > 1: d["preco_te"] = _num(precos[1])
 
         vals_pos, vals_neg = [], []
-        for vm in re.finditer(r"([\d]+,\d{2})(-?)", valor_cell, re.MULTILINE):
+        for vm in re.finditer(r"([\d.]+,\d{2})(-?)", valor_cell, re.MULTILINE):
             v = _num(vm.group(1))
             if vm.group(2) == "-": vals_neg.append(v)
             else: vals_pos.append(v)
@@ -366,12 +368,12 @@ def _parse_danfe(text, tables, words=None):
         break
 
     # ── TUSD/TE via texto (SEMPRE sobrescreve) ────────────────────────────
-    m = re.search(r"Consumo-TUSD\s+kWh\s+([\d,]+)\s+([\d,]+)\s+([\d,]+)", text)
+    m = re.search(r"Consumo-TUSD\s+kWh\s+([\d.,]+)\s+([\d.,]+)\s+([\d.,]+)", text)
     if m:
         d["consumo_kwh_tusd_qtd"] = _num(m.group(1))
         d["preco_tusd"]           = _num(m.group(2))
         d["valor_tusd"]           = _num(m.group(3))
-    m = re.search(r"Consumo-TE\s+kWh\s+([\d,]+)\s+([\d,]+)\s+([\d,]+)", text)
+    m = re.search(r"Consumo-TE\s+kWh\s+([\d.,]+)\s+([\d.,]+)\s+([\d.,]+)", text)
     if m:
         d["consumo_kwh_te_qtd"] = _num(m.group(1))
         d["preco_te"]           = _num(m.group(2))
@@ -388,10 +390,13 @@ def _parse_danfe(text, tables, words=None):
 
     # ── COSIP / ICMS-CDE via texto (SEMPRE sobrescreve) ──────────────────
     # P.b. cobre tanto "Pub." (sem acento) quanto com acento no PDF
+    icms_cde_vals = re.findall(r"ICMS-CDE\s+\S+\s+([\d.,]+)", text)
     m = re.search(r"Ilum\.?\s+P.b\.?\s+Municipal\s+([\d.,]+)", text)
     if m:
         d["cosip"] = _num(m.group(1))
-    icms_cde_vals = re.findall(r"ICMS-CDE\s+\S+\s+([\d.,]+)", text)
+    elif icms_cde_vals:
+        # Itens apos TUSD/TE sao ICMS-CDE, nao COSIP -- limpar valor capturado erroneamente da tabela
+        d.pop("cosip", None)
     if icms_cde_vals:
         d["icms_cde"] = round(sum(_num(v) or 0 for v in icms_cde_vals), 2)
 
