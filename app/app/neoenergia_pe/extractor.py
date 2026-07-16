@@ -394,6 +394,9 @@ def _parse_danfe(text, tables, words=None):
     m = re.search(r"Ilum\.?\s+P.b\.?\s+Municipal\s+([\d.,]+)", text)
     if m:
         d["cosip"] = _num(m.group(1))
+        if not icms_cde_vals:
+            # Sem ICMS-CDE: limpar qualquer icms_cde capturado erroneamente da tabela
+            d.pop("icms_cde", None)
     elif icms_cde_vals:
         # Itens apos TUSD/TE sao ICMS-CDE, nao COSIP -- limpar valor capturado erroneamente da tabela
         d.pop("cosip", None)
@@ -446,13 +449,13 @@ def _parse_danfe(text, tables, words=None):
         d["valor_encargos_cosip"] = round(sum(_num(v) or 0 for v in cosip_enc_vals), 2)
 
     # ── Tributos via texto (SEMPRE sobrescreve) ───────────────────────────
-    m = re.search(r"\bPIS\b\s+([\d,]+)\s+([\d,]+)\s+([\d,]+)", text)
+    m = re.search(r"\bPIS\b\s+([\d.,]+)\s+([\d.,]+)\s+([\d.,]+)", text)
     if m:
         d["pis_base"] = _num(m.group(1)); d["pis_aliq"] = _num(m.group(2)); d["pis_valor"] = _num(m.group(3))
-    m = re.search(r"\bCOFINS\b\s+([\d,]+)\s+([\d,]+)\s+([\d,]+)", text)
+    m = re.search(r"\bCOFINS\b\s+([\d.,]+)\s+([\d.,]+)\s+([\d.,]+)", text)
     if m:
         d["cofins_base"] = _num(m.group(1)); d["cofins_aliq"] = _num(m.group(2)); d["cofins_valor"] = _num(m.group(3))
-    m = re.search(r"\bICMS\b\s+([\d,]+)\s+([\d,]+)\s+([\d,]+)", text)
+    m = re.search(r"\bICMS\b\s+([\d.,]+)\s+([\d.,]+)\s+([\d.,]+)", text)
     if m:
         d["icms_base"] = _num(m.group(1)); d["icms_aliq"] = _num(m.group(2)); d["icms_valor"] = _num(m.group(3))
 
