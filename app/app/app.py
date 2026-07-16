@@ -651,7 +651,7 @@ config_default = {
 
 
 # ── Tabs ──────────────────────────────────────────────────────────────────────
-tab1, tab2, tab3, tab4 = st.tabs(["📤 Processar faturas", "📊 Resultados", "📋 Relatório Final", "ℹ️ Sobre"])
+tab1, tab2, tab3, tab4, tab5 = st.tabs(["📤 Processar faturas", "📊 Resultados", "📋 Relatório Final", "📈 Histórico", "ℹ️ Sobre"])
 
 
 # ── Tab 1: Upload ─────────────────────────────────────────────────────────────
@@ -941,8 +941,172 @@ with tab3:
                     st.error(f"Erro ao gerar relatório: {e}")
 
 
-# ── Tab 4: Sobre ──────────────────────────────────────────────────────────────
+# ── Tab 4: Histórico de Consumo ───────────────────────────────────────────────
 with tab4:
+    try:
+        import plotly.graph_objects as go
+        _PLOTLY_OK = True
+    except ImportError:
+        _PLOTLY_OK = False
+
+    _registros_hist = st.session_state.get("registros_acumulados", [])
+    _df_hist_all = pd.DataFrame([
+        {
+            "uc":           r.get("conta_uc") or "—",
+            "distribuidora": r.get("distribuidora", ""),
+            "ref":          r.get("ref_mes_ano") or "",
+            "consumo_kwh":  r.get("consumo_kwh"),
+            "total_fatura": r.get("total_fatura"),
+            "arquivo":      r.get("arquivo", ""),
+        }
+        for r in _registros_hist
+        if r.get("consumo_kwh") is not None
+    ])
+
+    if _df_hist_all.empty:
+        st.markdown("""
+        <div style="text-align:center; padding: 60px 0; color: #5A6B7C;">
+            <div style="font-size:48px; margin-bottom:16px;">📈</div>
+            <div style="font-family:'Poppins',sans-serif; font-size:16px; font-weight:500; color:#0A2540;">
+                Nenhum dado de consumo disponível
+            </div>
+            <div style="font-size:13px; margin-top:8px;">
+                Processe faturas na aba <strong>Processar faturas</strong> para ver o histórico.
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+    else:
+        def _parse_ref(ref):
+            try:
+                m, y = ref.strip().split("/")
+                return pd.Timestamp(year=int(y), month=int(m), day=1)
+            except Exception:
+                return pd.NaT
+
+        _df_hist_all["data"] = _df_hist_all["ref"].apply(_parse_ref)
+        _df_hist_all = _df_hist_all.sort_values("data")
+
+        _ucs = sorted(_df_hist_all["uc"].unique())
+
+        # Resumo por UC (quando há mais de uma)
+        if len(_ucs) > 1:
+            st.markdown("#### Resumo por unidade consumidora")
+            _resumo = []
+            for _uc in _ucs:
+                _dfu = _df_hist_all[_df_hist_all["uc"] == _uc]
+                _med = _dfu["consumo_kwh"].mean()
+                _na  = int((((_dfu["consumo_kwh"] - _med).abs() / _med) > 0.15).sum()) if _med else 0
+                _resumo.append({
+                    "UC": _uc,
+                    "Distribuidora": _dfu["distribuidora"].iloc[0],
+                    "Meses": len(_dfu),
+                    "Média (kWh)": round(_med, 1),
+                    "Anomalias": _na,
+                })
+            st.dataframe(pd.DataFrame(_resumo), use_container_width=True, hide_index=True)
+            st.divider()
+
+        _uc_sel = st.selectbox("Selecionar Unidade Consumidora", _ucs) if len(_ucs) > 1 else _ucs[0]
+        _df_uc  = _df_hist_all[_df_hist_all["uc"] == _uc_sel].copy()
+
+        _media = _df_uc["consumo_kwh"].mean()
+        _df_uc["desvio_pct"] = ((_df_uc["consumo_kwh"] - _media) / _media * 100).round(1)
+        _df_uc["anomalia"]   = _df_uc["consumo_kwh"].apply(
+            lambda x: abs(x - _media) / _media > 0.15 if _media else False
+        )
+
+        _n_meses = len(_df_uc)
+        _n_anom  = int(_df_uc["anomalia"].sum())
+
+        # Métricas
+        _ca, _cb, _cc = st.columns(3)
+        _ca.markdown(f'<div class="me-metric"><div class="val">{_n_meses}</div><div class="lbl">Meses no histórico</div></div>', unsafe_allow_html=True)
+        _cb.markdown(f'<div class="me-metric ok"><div class="val">{_media:.0f} kWh</div><div class="lbl">Consumo médio</div></div>', unsafe_allow_html=True)
+        _cc.markdown(f'<div class="me-metric {"div" if _n_anom else "ok"}"><div class="val">{_n_anom}</div><div class="lbl">Meses com anomalia (±15%)</div></div>', unsafe_allow_html=True)
+
+        st.markdown("")
+
+        # Gráfico
+        if _PLOTLY_OK:
+            _df_ok   = _df_uc[~_df_uc["anomalia"]]
+            _df_anom = _df_uc[_df_uc["anomalia"]]
+
+            _fig = go.Figure()
+
+            # Linha de consumo
+            _fig.add_trace(go.Scatter(
+                x=_df_uc["ref"], y=_df_uc["consumo_kwh"],
+                mode="lines",
+                line=dict(color="#1B5179", width=2),
+                showlegend=False, hoverinfo="skip",
+            ))
+
+            # Pontos normais
+            _fig.add_trace(go.Scatter(
+                x=_df_ok["ref"], y=_df_ok["consumo_kwh"],
+                mode="markers",
+                marker=dict(color="#5A9F37", size=9),
+                name="Normal",
+                hovertemplate="%{x}<br><b>%{y:.0f} kWh</b><extra></extra>",
+            ))
+
+            # Pontos anômalos
+            if not _df_anom.empty:
+                _fig.add_trace(go.Scatter(
+                    x=_df_anom["ref"], y=_df_anom["consumo_kwh"],
+                    mode="markers",
+                    marker=dict(color="#BA7517", size=13, symbol="circle",
+                                line=dict(width=2, color="#7A4D0E")),
+                    name="Anomalia (±15%)",
+                    customdata=_df_anom["desvio_pct"],
+                    hovertemplate="%{x}<br><b>%{y:.0f} kWh</b><br>Desvio: %{customdata:+.1f}%<extra></extra>",
+                ))
+
+            # Linha da média e faixas
+            _fig.add_hline(y=_media, line_dash="dash", line_color="#9AA8B7",
+                           annotation_text=f"Média {_media:.0f} kWh",
+                           annotation_position="top right")
+            _fig.add_hrect(y0=_media * 0.85, y1=_media * 1.15,
+                           fillcolor="#5A9F37", opacity=0.06, line_width=0)
+            _fig.add_hline(y=_media * 1.15, line_dash="dot", line_color="#BA7517", opacity=0.5,
+                           annotation_text="+15%", annotation_position="top right")
+            _fig.add_hline(y=_media * 0.85, line_dash="dot", line_color="#BA7517", opacity=0.5,
+                           annotation_text="−15%", annotation_position="bottom right")
+
+            _fig.update_layout(
+                title=dict(text=f"Histórico de Consumo — UC {_uc_sel}",
+                           font=dict(family="Poppins", size=15, color="#0A2540")),
+                xaxis_title="Mês/Ano",
+                yaxis_title="Consumo (kWh)",
+                plot_bgcolor="#FAFBF8",
+                paper_bgcolor="#FAFBF8",
+                legend=dict(orientation="h", y=1.1, x=0),
+                height=420,
+                margin=dict(t=70, r=110),
+            )
+            st.plotly_chart(_fig, use_container_width=True)
+        else:
+            st.line_chart(_df_uc.set_index("ref")["consumo_kwh"])
+
+        # Alertas textuais
+        if _n_anom:
+            for _, _row in _df_uc[_df_uc["anomalia"]].iterrows():
+                _dir = "acima" if _row["desvio_pct"] > 0 else "abaixo"
+                st.warning(f"⚠️ **{_row['ref']}** — {_row['consumo_kwh']:.0f} kWh · {abs(_row['desvio_pct']):.1f}% {_dir} da média")
+        else:
+            st.success(f"✅ Consumo estável nos {_n_meses} meses analisados")
+
+        # Tabela completa
+        st.divider()
+        st.markdown("#### Histórico completo")
+        _df_tab = _df_uc[["ref", "consumo_kwh", "desvio_pct", "total_fatura", "arquivo"]].copy()
+        _df_tab.columns = ["Mês/Ano", "Consumo (kWh)", "Desvio (%)", "Total Fatura (R$)", "Arquivo"]
+        _df_tab.insert(3, "Anomalia", _df_uc["anomalia"].map({True: "⚠️ Sim", False: "✅ Não"}).values)
+        st.dataframe(_df_tab, use_container_width=True, hide_index=True)
+
+
+# ── Tab 5: Sobre ──────────────────────────────────────────────────────────────
+with tab5:
     st.markdown("#### Como funciona")
     st.markdown("""
 A ferramenta extrai, audita e classifica cada item da fatura de forma automática:
