@@ -532,4 +532,3 @@ def parse_fatura(pdf_path):
     except Exception as e:
         result["erro"] = str(e)
     return result
-
