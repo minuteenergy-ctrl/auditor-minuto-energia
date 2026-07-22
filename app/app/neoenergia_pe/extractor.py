@@ -443,8 +443,8 @@ def _parse_danfe(text, tables, words=None):
     if juros_nf_vals:
         d["valor_juros_nf"] = round(sum(_num(v) or 0 for v in juros_nf_vals), 2)
 
-    # ── Encargos COSIP (JurosCOSIP, IPCACOSIP, Pla.JuroCOSIP) ───────────
-    cosip_enc_vals = re.findall(r"(?:Juros|IPCA|Pla\.Juro)COSIP\s+([\d.,]+)", text)
+    # ── Encargos COSIP (JurosCOSIP, IPCACOSIP, Pla.JuroCOSIP, Pla.IPCACOSIP) ──
+    cosip_enc_vals = re.findall(r"(?:Juros|IPCA|Pla\.(?:Juro|IPCA))COSIP\s+([\d.,]+)", text)
     if cosip_enc_vals:
         d["valor_encargos_cosip"] = round(sum(_num(v) or 0 for v in cosip_enc_vals), 2)
 
@@ -515,6 +515,174 @@ def _parse_danfe(text, tables, words=None):
     return d
 
 
+# ─────────────────────────── LAYOUT DANFE MT (Grupo A) ─────────────────────
+
+def _parse_danfe_mt(text):
+    """
+    Extrai campos especificos de faturas MT (Grupo A) layout DANFE Neoenergia PE.
+    Chamado apos _parse_danfe() com texto de TODAS as paginas concatenadas.
+    Acrescenta campos MT e limpa campos garbled do _parse_danfe().
+    """
+    d = {"is_mt": True}
+    # Anula constante_medidor garbled da secao MEDIDOR (colunas misalinhadas em MT DANFE)
+    d["constante_medidor"] = None
+
+    # Labels que encerram a secao de numericos de cada linha de item:
+    _SUFIXO = r"\b(?:PIS|COFINS|ICMS|GRANDEZAS|Montante)\b"
+
+    def _item_nums(pattern, unit):
+        """
+        Retorna lista de floats (virgula decimal) da linha de item, ANTES de qualquer
+        label de tributo/grandeza que possa aparecer na mesma linha (artefato pdfplumber).
+        """
+        m = re.search(pattern + r"\s+" + unit + r"\s+([^\n]+)", text, re.IGNORECASE)
+        if not m:
+            return []
+        linha = re.split(_SUFIXO, m.group(1))[0]
+        return re.findall(r"[\d.]+,\d+", linha)
+
+    def _mt_item(pattern, unit):
+        """(qtd, preco_com, valor, tarifa_sem) de uma linha de item MT."""
+        nums = _item_nums(pattern, unit)
+        if len(nums) < 3:
+            return None, None, None, None
+        # Estrutura: qtd | preco_com | valor | [red_base | red_val | aliq% | icms_item_val] | tarifa_sem
+        qtd        = _num(nums[0])
+        preco_com  = _num(nums[1])
+        valor      = _num(nums[2])
+        tarifa_sem = _num(nums[-1]) if len(nums) >= 4 else None
+        return qtd, preco_com, valor, tarifa_sem
+
+    # ── Subgrupo / Modalidade ─────────────────────────────────────────
+    m = re.search(r"Tarifa\s+(A\d\S*)\s*[-–]\s*\w+\s*[-–]\s*(\w+)", text, re.IGNORECASE)
+    if m:
+        d["subgrupo"]   = m.group(1).strip()
+        d["modalidade"] = m.group(2).strip()
+
+    # ── Grandezas Contratadas ─────────────────────────────────────────
+    # Ex: "Montante de Uso Contratado FP 120"  (sem "kW" na mesma linha)
+    for posto, key in [("FP", "dem_contratada_fp_kw"), ("NP", "dem_contratada_np_kw")]:
+        m = re.search(
+            r"Montante de Uso Contratado\s+" + posto + r"\s+([\d.,]+)",
+            text, re.IGNORECASE
+        )
+        if m:
+            d[key] = _num(m.group(1))
+
+    # ── Itens: Uso Sistema Fio NP / FP ───────────────────────────────
+    qtd, preco, valor, tarifa = _mt_item(r"Uso Sistema Fio NP", r"kW")
+    d["dem_fio_np_kw"]      = qtd
+    d["preco_fio_np_com"]   = preco
+    d["valor_fio_np"]       = valor
+    d["tarifa_fio_np_sem"]  = tarifa
+
+    qtd, preco, valor, tarifa = _mt_item(r"Uso Sistema Fio FP", r"kW")
+    d["dem_fio_fp_kw"]      = qtd
+    d["preco_fio_fp_com"]   = preco
+    d["valor_fio_fp"]       = valor
+    d["tarifa_fio_fp_sem"]  = tarifa
+
+    # ── Itens: Uso Sistema Encargo NP / FP ───────────────────────────
+    qtd, preco, valor, tarifa = _mt_item(r"Uso Sistema Encar\.?\s*NP", r"kWh")
+    d["consumo_encar_np_kwh"] = qtd
+    d["preco_encar_np_com"]   = preco
+    d["valor_encar_np"]       = valor
+    d["tarifa_encar_np_sem"]  = tarifa
+
+    qtd, preco, valor, tarifa = _mt_item(r"Uso Sistema Encar\.?\s*FP", r"kWh")
+    d["consumo_encar_fp_kwh"] = qtd
+    d["preco_encar_fp_com"]   = preco
+    d["valor_encar_fp"]       = valor
+    d["tarifa_encar_fp_sem"]  = tarifa
+
+    # ── Itens: Demanda Reativa Excedente NP / FP ─────────────────────
+    qtd, preco, valor, tarifa = _mt_item(r"Dem\.?\s*Reat[^\n]{0,20}NPonta", r"kVAr")
+    d["dem_reat_np_kvar"]       = qtd
+    d["valor_dem_reat_np"]      = valor
+    d["tarifa_dem_reat_np_sem"] = tarifa
+
+    # "Dem. Reativa Exc. FP" — descricao variavel; o unit "kVAr" identifica a linha
+    nums_demreat_fp = _item_nums(r"Dem\.?\s*Reat(?:iva)?\s*Exc\.?\s*(?:FP\b|FPonta)", r"kVAr")
+    if not nums_demreat_fp:
+        # Fallback: segunda ocorrencia de uma linha com "Dem" + "Reat" + "kVAr"
+        for m in re.finditer(r"Dem\.?\s*Reat[^\n]+kVAr\s+([^\n]+)", text, re.IGNORECASE):
+            nums_tmp = re.findall(r"[\d.]+,\d+", re.split(_SUFIXO, m.group(1))[0])
+            if len(nums_tmp) >= 1 and nums_demreat_fp == []:
+                # Pula NP (primeiro match), pega FP (segundo)
+                nums_demreat_fp = nums_tmp
+                continue
+            if nums_tmp:
+                nums_demreat_fp = nums_tmp
+                break
+    d["dem_reat_fp_kvar"]       = _num(nums_demreat_fp[0]) if nums_demreat_fp else None
+    d["valor_dem_reat_fp"]      = _num(nums_demreat_fp[2]) if len(nums_demreat_fp) >= 3 else None
+    d["tarifa_dem_reat_fp_sem"] = _num(nums_demreat_fp[-1]) if len(nums_demreat_fp) >= 4 else None
+
+    # ── Itens: Consumo Reativo Excedente NP / FP ─────────────────────
+    qtd, preco, valor, _t = _mt_item(r"Cons\.?\s*Reat[^\n]{0,20}NPonta", r"kVARh")
+    d["cons_reat_np_kvarh"] = qtd
+    d["valor_cons_reat_np"] = valor
+
+    qtd, preco, valor, _t = _mt_item(r"Cons\.?\s*Reat\s*[Ee]xc\.?[^\n]{0,15}FP(?:onta)?", r"kVARh")
+    if qtd is None:
+        # fallback sem "Exc": "Cons.Reat FPonta kVARh ..."
+        qtd, preco, valor, _t = _mt_item(r"Cons\.?\s*Reat\s+(?:Exc\.?\s*)?FP(?:onta)?", r"kVARh")
+    d["cons_reat_fp_kvarh"] = qtd
+    d["valor_cons_reat_fp"] = valor
+
+    # ── Demonstrativo: consumo e demanda medida (pagina 2) ────────────
+    # Formato: "Consumo Ativo Na Ponta <lant> <latu> <const> <medido> <faturado> [grafico...]"
+    # lant/latu sao inteiros (sem virgula); filtramos apenas floats com virgula.
+    # Estrutura de floats: [lant_f, latu_f, const, medido, faturado]  (5 valores)
+    for pattern, key_cons, key_cte in [
+        (r"Consumo Ativo Na Ponta",       "consumo_ponta_kwh", "constante_medidor_np"),
+        (r"Consumo Ativo Fora de Ponta",  "consumo_fp_kwh",    "constante_medidor_fp"),
+    ]:
+        m = re.search(pattern + r"\s+([^\n]+)", text, re.IGNORECASE)
+        if m:
+            # Truncar antes de dados de grafico (inteiros sem virgula, mes abrev)
+            linha = re.split(r"\s+[A-Z]{3}\s", m.group(1))[0]
+            floats = re.findall(r"[\d.]+,\d+", linha)
+            if floats:
+                d[key_cons] = _num(floats[-1])
+            if len(floats) >= 3:
+                d[key_cte] = _num(floats[-3])  # lant, latu, CONST, medido, fat
+
+    for pattern, key_dem in [
+        (r"Demanda M[áa]xima Na Ponta",             "demanda_medida_np_kw"),
+        (r"Demanda M[áa]xima (?:Fora de Ponta|FP)", "demanda_medida_fp_kw"),
+    ]:
+        m = re.search(pattern + r"\s+([^\n]+)", text, re.IGNORECASE)
+        if m:
+            linha = re.split(r"\s+[A-Z]{3}\s|(?:Ponta|FP)\s*$", m.group(1))[0]
+            floats = re.findall(r"[\d.]+,\d+", linha)
+            if floats:
+                d[key_dem] = _num(floats[-1])
+
+    # ── Ajustes de valor (negativos, trailing dash) ────────────────────
+    m = re.search(r"Dif\.?\s*Desc\.?\s*Ft\.?Alt-NP\s+([\d.,]+)-", text)
+    if m:
+        d["valor_dif_desc_np"] = -(_num(m.group(1)) or 0)
+    m = re.search(r"Dif\.?\s*Desc\.?\s*Ft\.?Alt-FP\s+([\d.,]+)-", text)
+    if m:
+        d["valor_dif_desc_fp"] = -(_num(m.group(1)) or 0)
+
+    # ── Imp.Som/Dim-C/Impost: para MT e positivo (ajuste tarifario) ──
+    # Para BT com SCEE e negativo (trailing dash) e ja capturado em _parse_danfe.
+    m = re.search(r"Imp\.Som/Dim-C/Impost\s+([\d.,]+)(?!\s*-)", text)
+    if m:
+        v = _num(m.group(1))
+        if v is not None and v > 0:
+            d["valor_imp_som_dim_mt"] = v
+
+    # ── Desconto incondicional A4 (informativo, embutido no preco) ────
+    m = re.search(r"Desconto Incondicional[^=\n]*=\s*R\$\s*([\d.,]+)", text, re.IGNORECASE)
+    if m:
+        d["desconto_a4_R$"] = _num(m.group(1))
+
+    return d
+
+
 # ─────────────────────────── PARSER PRINCIPAL ───────────────────────────────
 
 def parse_fatura(pdf_path):
@@ -529,6 +697,12 @@ def parse_fatura(pdf_path):
                 result["layout"] = "DANFE"
                 words = page.extract_words()
                 fields = _parse_danfe(text, tables, words)
+                if "Uso Sistema Fio NP" in text:
+                    # Fatura MT (Grupo A): Demonstrativo fica na pagina 2, ler todas as paginas
+                    full_text = "\n".join(
+                        (pdf.pages[i].extract_text() or "") for i in range(len(pdf.pages))
+                    )
+                    fields.update(_parse_danfe_mt(full_text))
             elif "NOTA FISCAL | FATURA" in text:
                 result["layout"] = "ANTIGO"
                 fields = _parse_antigo(text, tables)
