@@ -1,1 +1,84 @@
+{
+  "_comentario": [
+    "Tarifas sem tributos Neoenergia Pernambuco (CELPE).",
+    "vigencia_inicio / vigencia_fim: datas alinhadas ao ciclo de faturamento BT,",
+    "nao a data oficial da REH — distribuidora aplica nova tarifa a partir do",
+    "ciclo seguinte ao da publicacao (padrao observado em faturas reais).",
+    "Ex: REH 3.583/2026 oficial 2026-04-29, mas ciclo BT comeca em mai/2026;",
+    "ciclo MT comeca em abr/2026 (conforme fatura 310053605507.pdf REF 04/2026).",
+    "Periodos fora desta tabela emitem INVESTIGAR no audit.py."
+  ],
 
+  "tarifas_bt": [
+    {
+      "reh": "REH 3.583/2026",
+      "vigencia_inicio": "2026-05-01",
+      "vigencia_fim": null,
+      "_fonte": "Faturas 315301753984.pdf e 338175471354.pdf REF 05/2026 — tarifa_tusd_sem_trib e tarifa_te_sem_trib extraidos",
+      "TUSD_kwh": 0.51067724,
+      "TE_kwh":   0.27283103
+    },
+    {
+      "reh": "REH 3.451/2025",
+      "vigencia_inicio": "2025-05-01",
+      "vigencia_fim": "2026-04-30",
+      "_fonte": "Snippet PDF neoenergia.com: B1/B3 Consumo Ativo 0,48778000 0,28140000; confirmado em faturas do periodo",
+      "TUSD_kwh": 0.48778000,
+      "TE_kwh":   0.28140000
+    },
+    {
+      "reh": "REH 3.325/2024",
+      "vigencia_inicio": "2024-05-01",
+      "vigencia_fim": "2025-04-30",
+      "_fonte": "Snippet PDF neoenergia.com: B1/B3 Consumo Ativo 0,41050000 0,33382000; confirmado em faturas do periodo",
+      "TUSD_kwh": 0.41050000,
+      "TE_kwh":   0.33382000
+    },
+    {
+      "reh": "REH 3.195/2023",
+      "vigencia_inicio": "2023-06-01",
+      "vigencia_fim": "2024-04-30",
+      "_fonte": "Faturas 313251698718.pdf (B3, REF 02/2024) e 313601676559.pdf (B1, REF 01/2024) — tarifa extraida diretamente",
+      "TUSD_kwh": 0.42538000,
+      "TE_kwh":   0.33909000
+    },
+    {
+      "reh": "REH 3.032/2022",
+      "vigencia_inicio": "2022-05-01",
+      "vigencia_fim": "2023-05-31",
+      "_fonte": "Faturas 300005288238.pdf (B3, REF 01/2023) e 310052634167.pdf (B1, REF 05/2023) — tarifa extraida diretamente",
+      "TUSD_kwh": 0.38484000,
+      "TE_kwh":   0.32082000
+    },
+    {
+      "reh": "REH 2.861/2021",
+      "vigencia_inicio": "2021-04-01",
+      "vigencia_fim": "2022-04-30",
+      "_fonte": "Fatura JL2.pdf (ANTIGO, REF 02/2022) — tarifa_tusd_sem_trib e tarifa_te_sem_trib extraidos",
+      "TUSD_kwh": 0.34515000,
+      "TE_kwh":   0.27433000
+    }
+  ],
+
+  "tarifas_mt": {
+    "A4_Azul": [
+      {
+        "reh": "REH 3.583/2026",
+        "vigencia_inicio": "2026-04-01",
+        "vigencia_fim": null,
+        "_fonte": "Fatura 310053605507.pdf REF 04/2026 — coluna TARIFA UNIT(R$) sem tributos (Grupo A4 Azul)",
+        "Fio_NP_kw":          23.71390476,
+        "Fio_FP_kw":          10.70133440,
+        "Encar_NP_kwh":        0.09660733,
+        "Encar_FP_kwh":        0.09660733,
+        "DemReat_NP_kvar":    21.26466666,
+        "DemReat_FP_kvar":    21.26466666,
+        "ConsReatExc_kvarh":   0.28021666
+      }
+    ],
+    "_pendentes_A4_Azul": [
+      "REH 3.451/2025 (vigencia MT 2025-05-01 a 2026-03-31) — nenhuma fatura A4 deste periodo disponivel",
+      "REH 3.325/2024, REH 3.195/2023, REH 3.032/2022, REH 2.861/2021 — a cadastrar quando faturas MT estiverem disponíveis"
+    ]
+  }
+}
