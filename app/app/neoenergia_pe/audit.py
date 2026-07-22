@@ -198,6 +198,47 @@ def _chk(val, tol):
     return abs(val) <= tol
 
 
+# Decisao STF 05/2021 (RE 574.706): exclusao do ICMS da base do PIS/COFINS.
+# A Neoenergia PE passou a aplicar a nova formula nas faturas a partir de ~03/2023.
+_DATA_NOVA_FORMULA_ICMS = datetime(2023, 3, 1)
+
+
+def _base_icms_esperada(valor_tusd, valor_te, valor_bandeira,
+                         icms_aliq_pct, pis_aliq_pct, cofins_aliq_pct,
+                         ref_mes_ano):
+    """
+    Calcula a base de calculo do ICMS esperada (BT e MT — ponto de partida comum).
+
+    Componentes que entram na base: TE + TUSD + Bandeira Tarifaria.
+    COSIP nao compoe a base (esfera municipal — valido para todas as distribuidoras).
+
+    Formulas (aliquotas em %):
+    - A partir de 03/2023 (aplicacao da decisao STF 05/2021 — RE 574.706):
+        base = (TE + TUSD + Bandeira) / ((1 - ICMS/100) * (1 - (PIS+COFINS)/100))
+    - Antes de 03/2023:
+        base = (TE + TUSD + Bandeira) / (1 - (ICMS+PIS+COFINS)/100)
+        Obs: ICMS entrava na base de calculo do PIS e COFINS.
+
+    Retorna (base_R$, nova_formula: bool) ou (None, None) se dados insuficientes.
+    """
+    net = (valor_tusd or 0) + (valor_te or 0) + (valor_bandeira or 0)
+    if net <= 0 or not icms_aliq_pct or not pis_aliq_pct or not cofins_aliq_pct:
+        return None, None
+
+    icms   = icms_aliq_pct   / 100
+    pis    = pis_aliq_pct    / 100
+    cofins = cofins_aliq_pct / 100
+
+    ref_dt       = _parse_ref(ref_mes_ano)
+    nova_formula = (ref_dt is not None and ref_dt >= _DATA_NOVA_FORMULA_ICMS)
+
+    denom = (1 - icms) * (1 - (pis + cofins)) if nova_formula else 1 - (icms + pis + cofins)
+    if denom <= 0:
+        return None, None
+
+    return round(net / denom, 2), nova_formula
+
+
 def _audit_leitura(lant, latu, cte, qtd_total, label, flags_inv, metricas, tol=TOL_LEIT):
     """Audita (latu - lant) * cte para um medidor com leitura_anterior conhecida (> 0)."""
     calc = round((latu - lant) * cte, 1)
@@ -227,6 +268,22 @@ def _auditar_mt(r):
         flags_div.append(f"campos criticos ausentes: {', '.join(faltam_crit)}")
     elif faltam_sec:
         flags_inv.append(f"campos secundarios ausentes: {', '.join(faltam_sec)}")
+
+    # 1b. Periodo de leitura — RN 1000/2021 Art. 261
+    # Normal: mes civil (28-31 dias); excepcional: 15-47 dias
+    nr_dias = r.get("nr_dias")
+    if nr_dias is not None:
+        metricas["nr_dias"] = nr_dias
+        if nr_dias < 15 or nr_dias > 47:
+            flags_div.append(
+                f"periodo de faturamento: {nr_dias} dias fora do limite legal "
+                f"(RN 1000/2021 Art. 261: minimo 15, maximo 47 dias)"
+            )
+        elif nr_dias < 28 or nr_dias > 31:
+            flags_inv.append(
+                f"periodo de faturamento MT: {nr_dias} dias fora do mes civil "
+                f"(RN 1000/2021 Art. 261: normal = mes civil; 15-47 apenas em casos excepcionais)"
+            )
 
     # 2. REH MT — validacao de tarifas sem tributos
     subgrupo   = r.get("subgrupo",   "A4")
@@ -329,6 +386,79 @@ def _auditar_mt(r):
     else:
         metricas["dif_ICMS_R$"] = None
 
+    # 6b. Base de calculo do ICMS — composicao correta (MT)
+    # Para MT: apenas a DEMANDA UTILIZADA entra na base do ICMS.
+    # Demanda nao utilizada (contratada - medida) e isenta de ICMS.
+    # Calculo: dem_utilizada_np * tarifa_fio_np_sem + dem_utilizada_fp * tarifa_fio_fp_sem
+    #        + consumo_encar_np * tarifa_encar_np_sem + consumo_encar_fp * tarifa_encar_fp_sem
+    # Entao: base = net_taxable_mt / formula_icms
+    if icms_b and icms_a and r.get("pis_aliq") and r.get("cofins_aliq"):
+        # Demanda utilizada = min(medida, contratada); se nao disponivel, usa o que foi faturado
+        dem_util_np = None
+        dem_util_fp = None
+        for posto, key_med, key_cont, key_util in [
+            ("NP", "demanda_medida_np_kw", "dem_contratada_np_kw", None),
+            ("FP", "demanda_medida_fp_kw", "dem_contratada_fp_kw", None),
+        ]:
+            med  = r.get(f"demanda_medida_{posto.lower()}_kw")
+            cont = r.get(f"dem_contratada_{posto.lower()}_kw")
+            if med is not None and cont is not None:
+                util = min(med, cont)
+            elif med is not None:
+                util = med
+            elif cont is not None:
+                util = cont
+            else:
+                util = r.get(f"dem_fio_{posto.lower()}_kw")  # qtd faturada como fallback
+            if posto == "NP":
+                dem_util_np = util
+            else:
+                dem_util_fp = util
+
+        tar_fio_np  = r.get("tarifa_fio_np_sem")
+        tar_fio_fp  = r.get("tarifa_fio_fp_sem")
+        tar_enc_np  = r.get("tarifa_encar_np_sem")
+        tar_enc_fp  = r.get("tarifa_encar_fp_sem")
+        enc_np_kwh  = r.get("consumo_encar_np_kwh")
+        enc_fp_kwh  = r.get("consumo_encar_fp_kwh")
+
+        net_mt  = 0.0
+        net_mt += (dem_util_np  or 0) * (tar_fio_np  or 0)
+        net_mt += (dem_util_fp  or 0) * (tar_fio_fp  or 0)
+        net_mt += (enc_np_kwh   or 0) * (tar_enc_np  or 0)
+        net_mt += (enc_fp_kwh   or 0) * (tar_enc_fp  or 0)
+
+        if net_mt > 0:
+            base_esp_mt, nova_f_mt = _base_icms_esperada(
+                net_mt, 0, 0,  # net_mt ja e o total sem tributos; te/bandeira=0
+                icms_a, r.get("pis_aliq"), r.get("cofins_aliq"),
+                r.get("ref_mes_ano"),
+            )
+            if base_esp_mt is not None:
+                dif_base_mt     = abs(base_esp_mt - icms_b)
+                dif_base_mt_pct = dif_base_mt / base_esp_mt if base_esp_mt else 0
+                metricas["base_icms_esp_mt"]   = base_esp_mt
+                metricas["dif_base_icms_mt_R$"] = round(dif_base_mt, 2)
+                metricas["formula_icms"]        = "STF/2021" if nova_f_mt else "anterior_03-2023"
+                # Nota: demanda nao utilizada (contratada - medida) e isenta de ICMS
+                for posto2 in ("np", "fp"):
+                    med2  = r.get(f"demanda_medida_{posto2}_kw")
+                    cont2 = r.get(f"dem_contratada_{posto2}_kw")
+                    if med2 is not None and cont2 is not None and cont2 > med2:
+                        metricas[f"dem_isenta_icms_{posto2}_kw"] = round(cont2 - med2, 2)
+                if dif_base_mt_pct > 0.001:
+                    flags_div.append(
+                        f"base ICMS MT: fatura={icms_b:.2f} vs esperado={base_esp_mt:.2f} "
+                        f"(dif={icms_b - base_esp_mt:+.2f}, formula {'nova STF' if nova_f_mt else 'antiga'}) "
+                        f"-- verificar demanda utilizada e composicao da base"
+                    )
+            else:
+                metricas["dif_base_icms_mt_R$"] = None
+        else:
+            metricas["dif_base_icms_mt_R$"] = None
+    else:
+        metricas["dif_base_icms_mt_R$"] = None
+
     # 7. Soma dos itens vs total da fatura
     total = r.get("total_fatura")
     itens_mt = [
@@ -411,6 +541,22 @@ def auditar(r):
         flags_div.append(f"campos criticos ausentes: {', '.join(faltam_crit)}")
     elif faltam_sec:
         flags_inv.append(f"campos secundarios ausentes: {', '.join(faltam_sec)}")
+
+    # 1b. Periodo de leitura — RN 1000/2021 Art. 260
+    # Normal: 27 a 33 dias; excepcional (1o faturamento, remanejamento): 15 a 47 dias
+    nr_dias = r.get("nr_dias")
+    if nr_dias is not None:
+        metricas["nr_dias"] = nr_dias
+        if nr_dias < 15 or nr_dias > 47:
+            flags_div.append(
+                f"periodo de faturamento: {nr_dias} dias fora do limite legal "
+                f"(RN 1000/2021 Art. 260: minimo 15, maximo 47 dias)"
+            )
+        elif nr_dias < 27 or nr_dias > 33:
+            flags_inv.append(
+                f"periodo de faturamento: {nr_dias} dias fora da faixa normal "
+                f"(RN 1000/2021 Art. 260: normal 27-33 dias; 15-47 apenas em casos excepcionais)"
+            )
 
     # 2. Math TUSD
     qtd   = r.get("consumo_kwh_tusd_qtd")
@@ -539,7 +685,34 @@ def auditar(r):
     else:
         metricas["dif_ICMS_R$"] = None
 
-    # 5b. SCEE -- auditoria da compensacao
+    # 5b. Base de calculo do ICMS — composicao correta
+    # Componentes: TE + TUSD + Bandeira. COSIP nao entra.
+    # Formula varia conforme o periodo (decisao STF 05/2021, aplicada ~03/2023).
+    if icms_b and icms_a and r.get("pis_aliq") and r.get("cofins_aliq"):
+        base_esp, nova_f = _base_icms_esperada(
+            r.get("valor_tusd"), r.get("valor_te"),
+            r.get("valor_bandeira") or 0,
+            icms_a, r.get("pis_aliq"), r.get("cofins_aliq"),
+            r.get("ref_mes_ano"),
+        )
+        if base_esp is not None:
+            dif_base     = abs(base_esp - icms_b)
+            dif_base_pct = dif_base / base_esp if base_esp else 0
+            metricas["base_icms_esperada"]  = base_esp
+            metricas["dif_base_icms_R$"]    = round(dif_base, 2)
+            metricas["formula_icms"]        = "STF/2021" if nova_f else "anterior_03-2023"
+            if dif_base_pct > 0.001:  # tolerancia 0.1%
+                flags_div.append(
+                    f"base ICMS: fatura={icms_b:.2f} vs esperado={base_esp:.2f} "
+                    f"(dif={icms_b - base_esp:+.2f}, formula {'nova STF' if nova_f else 'antiga'}) "
+                    f"-- verificar composicao da base de calculo"
+                )
+        else:
+            metricas["dif_base_icms_R$"] = None
+    else:
+        metricas["dif_base_icms_R$"] = None
+
+    # 5c. SCEE -- auditoria da compensacao
     if r.get("is_scee"):
         scee_kwh  = r.get("scee_kwh_compensados") or 0
         comp_c    = r.get("valor_imp_som_dim_c") or 0
