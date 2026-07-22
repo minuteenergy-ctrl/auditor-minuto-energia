@@ -38,6 +38,8 @@
       "reh": "REH 3.195/2023",
       "vigencia_inicio": "2023-06-01",
       "vigencia_fim": "2024-04-30",
+      "data_oficial": "2023-05-14",
+      "_fonte_data_oficial": "Calculado a partir da fatura 310951760385.pdf (REF 06/2023, leitura 12/05 a 12/06): 1d x 0.38484 + 30d x 0.42538 / 31 = 0.42407225 (match exato)",
       "_fonte": "Faturas 313251698718.pdf (B3, REF 02/2024) e 313601676559.pdf (B1, REF 01/2024) — tarifa extraida diretamente",
       "TUSD_kwh": 0.42538000,
       "TE_kwh":   0.33909000
