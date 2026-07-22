@@ -880,12 +880,15 @@ def auditar(r):
             metricas["reh_bt_ponderado"] = True
         tusd_sem = r.get("tarifa_tusd_sem_trib")
         te_sem   = r.get("tarifa_te_sem_trib")
+        kwh_fat  = r.get("consumo_kwh_tusd_qtd")
         if tusd_sem is not None:
             if _tol_reh(tusd_sem, reh_bt["TUSD_kwh"]):
+                dif_tusd = tusd_sem - reh_bt["TUSD_kwh"]
+                imp_tusd = f" | impacto R$ {kwh_fat * dif_tusd:+.2f}" if kwh_fat else ""
                 flags_div.append(
                     f"TUSD tarifa REH: fatura={tusd_sem:.8f} vs "
                     f"{reh_bt['reh']}={reh_bt['TUSD_kwh']:.8f} R$/kWh "
-                    f"(dif={tusd_sem - reh_bt['TUSD_kwh']:+.8f})"
+                    f"(dif={dif_tusd:+.8f}{imp_tusd})"
                 )
         else:
             flags_inv.append(
@@ -893,10 +896,12 @@ def auditar(r):
             )
         if te_sem is not None:
             if _tol_reh(te_sem, reh_bt["TE_kwh"]):
+                dif_te = te_sem - reh_bt["TE_kwh"]
+                imp_te = f" | impacto R$ {kwh_fat * dif_te:+.2f}" if kwh_fat else ""
                 flags_div.append(
                     f"TE tarifa REH: fatura={te_sem:.8f} vs "
                     f"{reh_bt['reh']}={reh_bt['TE_kwh']:.8f} R$/kWh "
-                    f"(dif={te_sem - reh_bt['TE_kwh']:+.8f})"
+                    f"(dif={dif_te:+.8f}{imp_te})"
                 )
         else:
             flags_inv.append(
