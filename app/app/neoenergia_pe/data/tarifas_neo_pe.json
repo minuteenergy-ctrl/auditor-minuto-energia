@@ -6,7 +6,10 @@
     "ciclo seguinte ao da publicacao (padrao observado em faturas reais).",
     "Ex: REH 3.583/2026 oficial 2026-04-29, mas ciclo BT comeca em mai/2026;",
     "ciclo MT comeca em abr/2026 (conforme fatura 310053605507.pdf REF 04/2026).",
-    "Periodos fora desta tabela emitem INVESTIGAR no audit.py."
+    "Periodos fora desta tabela emitem INVESTIGAR no audit.py.",
+    "REGRA: valores devem ser extraidos da Resolucao Homologatoria ANEEL oficial,",
+    "NUNCA de outra fatura. Subclasses (B1, B2, B3...) podem ter tarifas diferentes.",
+    "Quando subclasses diferem, usar campo 'por_subclasse'. Fallback: TUSD_kwh/TE_kwh raiz."
   ],
 
   "tarifas_bt": [
@@ -14,9 +17,17 @@
       "reh": "REH 3.583/2026",
       "vigencia_inicio": "2026-05-01",
       "vigencia_fim": null,
-      "_fonte": "Faturas 315301753984.pdf e 338175471354.pdf REF 05/2026 — tarifa_tusd_sem_trib e tarifa_te_sem_trib extraidos",
+      "_fonte": "Faturas 315301753984.pdf e 338175471354.pdf REF 05/2026 — PENDENTE verificacao na resolucao ANEEL (valores extraidos de faturas B3)",
+      "_aviso": "TUSD_kwh e TE_kwh raiz sao provisorios (B3) — confirmar via REH 3.583 publicada pela ANEEL",
       "TUSD_kwh": 0.51067724,
-      "TE_kwh":   0.27283103
+      "TE_kwh":   0.27283103,
+      "por_subclasse": {
+        "B1": {
+          "_fonte": "Fatura 312551967324 (B1 Residencial, REF 06/2026) — confirmado por Janaina",
+          "TUSD_kwh": 0.53521000,
+          "TE_kwh":   0.26365000
+        }
+      }
     },
     {
       "reh": "REH 3.451/2025",
