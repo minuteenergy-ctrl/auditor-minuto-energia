@@ -52,17 +52,42 @@ def _reh_para_lista(ref_mes_ano, lista_rehs):
     return None
 
 
-def _reh_bt_para_periodo(ref_mes_ano):
-    """Retorna dict REH BT vigente para ref_mes_ano ('MM/AAAA'), ou None se nao cadastrado."""
+def _tarifas_bt_para_subclasse(t, subclasse):
+    """
+    Retorna (TUSD_kwh, TE_kwh) de um dict REH considerando a subclasse da fatura (B1, B2, B3...).
+    Se existir entrada em 'por_subclasse' para a subclasse, usa esses valores.
+    Caso contrario, usa os valores raiz do dict (fallback).
+    Fonte dos valores deve ser a REH publicada pela ANEEL, nunca outra fatura.
+    """
+    if subclasse:
+        sub = t.get("por_subclasse", {}).get(subclasse)
+        if sub:
+            return sub.get("TUSD_kwh", t["TUSD_kwh"]), sub.get("TE_kwh", t["TE_kwh"])
+    return t["TUSD_kwh"], t["TE_kwh"]
+
+
+def _reh_bt_para_periodo(ref_mes_ano, subclasse=None):
+    """Retorna dict REH BT vigente para ref_mes_ano ('MM/AAAA'), ou None se nao cadastrado.
+    Aplica tarifas da subclasse (B1, B2, B3...) se disponivel no JSON."""
     tarifas = _carregar_tarifas()
-    return _reh_para_lista(ref_mes_ano, tarifas.get("tarifas_bt", []))
+    t = _reh_para_lista(ref_mes_ano, tarifas.get("tarifas_bt", []))
+    if t is None:
+        return None
+    if subclasse:
+        sub = t.get("por_subclasse", {}).get(subclasse)
+        if sub:
+            t = dict(t)
+            t["TUSD_kwh"] = sub.get("TUSD_kwh", t["TUSD_kwh"])
+            t["TE_kwh"]   = sub.get("TE_kwh",   t["TE_kwh"])
+    return t
 
 
-def _reh_bt_ponderado(data_lant_str, data_latu_str, lista_rehs):
+def _reh_bt_ponderado(data_lant_str, data_latu_str, lista_rehs, subclasse=None):
     """
     Calcula tarifas BT ponderadas pelos dias sob cada REH no periodo de leitura.
     Usa data_oficial (se disponivel no JSON) ou vigencia_inicio como inicio efetivo.
     Periodo de consumo: dia seguinte a leitura_anterior ate leitura_atual (inclusive).
+    subclasse: 'B1', 'B2', 'B3'... — aplica tarifas por subclasse quando disponivel.
     Retorna dict {TUSD_kwh, TE_kwh, reh, ponderado} ou None se datas invalidas.
     """
     try:
@@ -101,8 +126,9 @@ def _reh_bt_ponderado(data_lant_str, data_latu_str, lista_rehs):
 
         if ov_fim > ov_ini:
             dias = (ov_fim - ov_ini).days
-            tusd_pond += dias * t["TUSD_kwh"]
-            te_pond   += dias * t["TE_kwh"]
+            tusd_val, te_val = _tarifas_bt_para_subclasse(t, subclasse)
+            tusd_pond += dias * tusd_val
+            te_pond   += dias * te_val
             reh_labels.append(f"{t['reh']} ({dias}d/{total_dias}d)")
 
     if not reh_labels:
@@ -556,6 +582,7 @@ def auditar(r):
         r.get("valor_multas_nf") or 0,
         r.get("valor_juros_nf") or 0,
         r.get("valor_encargos_cosip") or 0,
+        r.get("valor_devolucao_credito") or 0,  # negativo
     ]
     soma = sum(v for v in itens if v is not None)
     metricas["soma_itens_R$"] = round(soma, 2)
@@ -584,13 +611,19 @@ def auditar(r):
     # 7. REH BT — validacao de tarifas sem tributos
     #    Usa ponderacao proporcional pelos dias sob cada REH no periodo de leitura
     #    quando data_leitura_anterior e data_leitura_atual estiverem disponiveis.
+    #    Tarifas variam por subclasse (B1, B2, B3...) — extrai do campo classificacao.
+    _classif = (r.get("classificacao") or "").strip().split()
+    subclasse_bt = _classif[0] if _classif and _classif[0].startswith("B") else None
+    if subclasse_bt:
+        metricas["subclasse_bt"] = subclasse_bt
+
     lista_bt = _carregar_tarifas().get("tarifas_bt", [])
     reh_bt = _reh_bt_ponderado(
-        r.get("data_leitura_anterior"), r.get("data_leitura_atual"), lista_bt
+        r.get("data_leitura_anterior"), r.get("data_leitura_atual"), lista_bt, subclasse_bt
     )
     if reh_bt is None:
         # Fallback: lookup simples por ref_mes_ano (sem datas de leitura)
-        reh_bt = _reh_bt_para_periodo(r.get("ref_mes_ano"))
+        reh_bt = _reh_bt_para_periodo(r.get("ref_mes_ano"), subclasse_bt)
 
     if reh_bt is None:
         flags_inv.append(

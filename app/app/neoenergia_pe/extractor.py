@@ -408,6 +408,11 @@ def _parse_danfe(text, tables, words=None):
         m = re.search(r"Parc\d+/\d+\s+\S+\s+([\d.,]+)", text)
         if m: d["valor_parcelamento"] = _num(m.group(1))
 
+    # ── Devolucao de Credito (negativo, trailing dash) ────────────────────
+    m = re.search(r"Devolu.{1,5}o\s+de\s+Cr.dito\s+([\d.,]+)-", text, re.IGNORECASE)
+    if m:
+        d["valor_devolucao_credito"] = -(_num(m.group(1)) or 0)
+
     # ── IPCA (correcao monetaria em parcelamentos) ────────────────────────
     ipca_vals = re.findall(r"IPCA-NF-\S+\s+([\d.,]+)", text)
     if ipca_vals:
