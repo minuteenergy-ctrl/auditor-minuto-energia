@@ -387,21 +387,27 @@ def _auditar_mt(r):
         metricas["dif_ICMS_R$"] = None
 
     # 6b. Base de calculo do ICMS — composicao correta (MT)
-    # Para MT: apenas a DEMANDA UTILIZADA entra na base do ICMS.
-    # Demanda nao utilizada (contratada - medida) e isenta de ICMS.
-    # Calculo: dem_utilizada_np * tarifa_fio_np_sem + dem_utilizada_fp * tarifa_fio_fp_sem
-    #        + consumo_encar_np * tarifa_encar_np_sem + consumo_encar_fp * tarifa_encar_fp_sem
-    # Entao: base = net_taxable_mt / formula_icms
+    # ICMS base = dem_util_NP * preco_fio_NP_com + dem_util_FP * preco_fio_FP_com
+    #           + enc_NP * preco_enc_NP_com + enc_FP * preco_enc_FP_com + bandeira_com
+    # Demanda NAO UTILIZADA (contratada - medida) e isenta de ICMS.
+    # Calculo via SEM tributos: net_sem / denom = base_com (equivalente a soma dos COM).
     if icms_b and icms_a and r.get("pis_aliq") and r.get("cofins_aliq"):
-        # Demanda utilizada = min(medida, contratada); se nao disponivel, usa o que foi faturado
+        # Pre-calcula denominador para formula STF
+        ref_dt_mt    = _parse_ref(r.get("ref_mes_ano"))
+        nova_f_mt    = (ref_dt_mt is not None and ref_dt_mt >= _DATA_NOVA_FORMULA_ICMS)
+        icms_mt   = icms_a / 100
+        pis_mt    = r.get("pis_aliq") / 100
+        cofins_mt = r.get("cofins_aliq") / 100
+        denom_mt  = ((1 - icms_mt) * (1 - (pis_mt + cofins_mt)) if nova_f_mt
+                     else 1 - (icms_mt + pis_mt + cofins_mt))
+        metricas["formula_icms"] = "STF/2021" if nova_f_mt else "anterior_03-2023"
+
+        # Demanda utilizada = min(medida, contratada)
         dem_util_np = None
         dem_util_fp = None
-        for posto, key_med, key_cont, key_util in [
-            ("NP", "demanda_medida_np_kw", "dem_contratada_np_kw", None),
-            ("FP", "demanda_medida_fp_kw", "dem_contratada_fp_kw", None),
-        ]:
-            med  = r.get(f"demanda_medida_{posto.lower()}_kw")
-            cont = r.get(f"dem_contratada_{posto.lower()}_kw")
+        for posto in ("np", "fp"):
+            med  = r.get(f"demanda_medida_{posto}_kw")
+            cont = r.get(f"dem_contratada_{posto}_kw")
             if med is not None and cont is not None:
                 util = min(med, cont)
             elif med is not None:
@@ -409,8 +415,8 @@ def _auditar_mt(r):
             elif cont is not None:
                 util = cont
             else:
-                util = r.get(f"dem_fio_{posto.lower()}_kw")  # qtd faturada como fallback
-            if posto == "NP":
+                util = r.get(f"dem_fio_{posto}_kw")
+            if posto == "np":
                 dem_util_np = util
             else:
                 dem_util_fp = util
@@ -422,40 +428,67 @@ def _auditar_mt(r):
         enc_np_kwh  = r.get("consumo_encar_np_kwh")
         enc_fp_kwh  = r.get("consumo_encar_fp_kwh")
 
-        net_mt  = 0.0
-        net_mt += (dem_util_np  or 0) * (tar_fio_np  or 0)
-        net_mt += (dem_util_fp  or 0) * (tar_fio_fp  or 0)
-        net_mt += (enc_np_kwh   or 0) * (tar_enc_np  or 0)
-        net_mt += (enc_fp_kwh   or 0) * (tar_enc_fp  or 0)
+        # Net SEM tributos (demanda util + encargos). Bandeira: valor_bandeira e COM → converter
+        bandeira_sem = (r.get("valor_bandeira") or 0) * denom_mt if denom_mt > 0 else 0
+        net_mt_sem = (
+            (dem_util_np or 0) * (tar_fio_np or 0)
+            + (dem_util_fp or 0) * (tar_fio_fp or 0)
+            + (enc_np_kwh  or 0) * (tar_enc_np or 0)
+            + (enc_fp_kwh  or 0) * (tar_enc_fp or 0)
+            + bandeira_sem
+        )
 
-        if net_mt > 0:
-            base_esp_mt, nova_f_mt = _base_icms_esperada(
-                net_mt, 0, 0,  # net_mt ja e o total sem tributos; te/bandeira=0
-                icms_a, r.get("pis_aliq"), r.get("cofins_aliq"),
-                r.get("ref_mes_ano"),
-            )
-            if base_esp_mt is not None:
-                dif_base_mt     = abs(base_esp_mt - icms_b)
-                dif_base_mt_pct = dif_base_mt / base_esp_mt if base_esp_mt else 0
-                metricas["base_icms_esp_mt"]   = base_esp_mt
-                metricas["dif_base_icms_mt_R$"] = round(dif_base_mt, 2)
-                metricas["formula_icms"]        = "STF/2021" if nova_f_mt else "anterior_03-2023"
-                # Nota: demanda nao utilizada (contratada - medida) e isenta de ICMS
-                for posto2 in ("np", "fp"):
-                    med2  = r.get(f"demanda_medida_{posto2}_kw")
-                    cont2 = r.get(f"dem_contratada_{posto2}_kw")
-                    if med2 is not None and cont2 is not None and cont2 > med2:
-                        metricas[f"dem_isenta_icms_{posto2}_kw"] = round(cont2 - med2, 2)
-                if dif_base_mt_pct > 0.001:
-                    flags_div.append(
-                        f"base ICMS MT: fatura={icms_b:.2f} vs esperado={base_esp_mt:.2f} "
-                        f"(dif={icms_b - base_esp_mt:+.2f}, formula {'nova STF' if nova_f_mt else 'antiga'}) "
-                        f"-- verificar demanda utilizada e composicao da base"
-                    )
-            else:
-                metricas["dif_base_icms_mt_R$"] = None
+        if net_mt_sem > 0 and denom_mt > 0:
+            base_esp_mt     = round(net_mt_sem / denom_mt, 2)
+            dif_base_mt     = abs(base_esp_mt - icms_b)
+            dif_base_mt_pct = dif_base_mt / base_esp_mt if base_esp_mt else 0
+            metricas["base_icms_esp_mt"]    = base_esp_mt
+            metricas["dif_base_icms_mt_R$"] = round(dif_base_mt, 2)
+            for posto2 in ("np", "fp"):
+                med2  = r.get(f"demanda_medida_{posto2}_kw")
+                cont2 = r.get(f"dem_contratada_{posto2}_kw")
+                if med2 is not None and cont2 is not None and cont2 > med2:
+                    metricas[f"dem_isenta_icms_{posto2}_kw"] = round(cont2 - med2, 2)
+            if dif_base_mt_pct > 0.001:
+                flags_div.append(
+                    f"base ICMS MT: fatura={icms_b:.2f} vs esperado={base_esp_mt:.2f} "
+                    f"(dif={icms_b - base_esp_mt:+.2f}, "
+                    f"formula {'nova STF' if nova_f_mt else 'antiga'}) "
+                    f"-- verificar demanda utilizada e composicao da base"
+                )
         else:
             metricas["dif_base_icms_mt_R$"] = None
+
+    # 6c. Tarifa COM tributos MT — verificar calculo a partir da tarifa SEM
+    if icms_a and r.get("pis_aliq") and r.get("cofins_aliq"):
+        # denom_mt pode nao existir se icms_b era None em 6b — recalcular se necessario
+        if "denom_mt" not in locals():
+            ref_dt_mt = _parse_ref(r.get("ref_mes_ano"))
+            nova_f_mt = (ref_dt_mt is not None and ref_dt_mt >= _DATA_NOVA_FORMULA_ICMS)
+            icms_mt   = icms_a / 100
+            pis_mt    = r.get("pis_aliq") / 100
+            cofins_mt = r.get("cofins_aliq") / 100
+            denom_mt  = ((1 - icms_mt) * (1 - (pis_mt + cofins_mt)) if nova_f_mt
+                         else 1 - (icms_mt + pis_mt + cofins_mt))
+        if denom_mt > 0:
+            for nome_mt, key_sem_mt, key_com_mt in [
+                ("Fio NP",   "tarifa_fio_np_sem",  "preco_fio_np_com"),
+                ("Fio FP",   "tarifa_fio_fp_sem",  "preco_fio_fp_com"),
+                ("Encar NP", "tarifa_encar_np_sem", "preco_encar_np_com"),
+                ("Encar FP", "tarifa_encar_fp_sem", "preco_encar_fp_com"),
+            ]:
+                tar_sem_mt   = r.get(key_sem_mt)
+                preco_com_mt = r.get(key_com_mt)
+                if tar_sem_mt and preco_com_mt:
+                    preco_exp_mt  = round(tar_sem_mt / denom_mt, 8)
+                    dif_pct_mt_t  = abs(preco_com_mt - preco_exp_mt) / preco_exp_mt if preco_exp_mt else 0
+                    if dif_pct_mt_t > 0.0005:
+                        flags_div.append(
+                            f"tarifa COM {nome_mt}: fatura={preco_com_mt:.8f} "
+                            f"vs esperado={preco_exp_mt:.8f} "
+                            f"(sem={tar_sem_mt:.8f}, dif={preco_com_mt - preco_exp_mt:+.8f}, "
+                            f"formula {'nova STF' if nova_f_mt else 'antiga'})"
+                        )
     else:
         metricas["dif_base_icms_mt_R$"] = None
 
@@ -685,32 +718,58 @@ def auditar(r):
     else:
         metricas["dif_ICMS_R$"] = None
 
-    # 5b. Base de calculo do ICMS — composicao correta
-    # Componentes: TE + TUSD + Bandeira. COSIP nao entra.
-    # Formula varia conforme o periodo (decisao STF 05/2021, aplicada ~03/2023).
-    if icms_b and icms_a and r.get("pis_aliq") and r.get("cofins_aliq"):
-        base_esp, nova_f = _base_icms_esperada(
-            r.get("valor_tusd"), r.get("valor_te"),
-            r.get("valor_bandeira") or 0,
-            icms_a, r.get("pis_aliq"), r.get("cofins_aliq"),
-            r.get("ref_mes_ano"),
+    # 5b. Base de calculo do ICMS — composicao correta (BT)
+    # ICMS base = valor_tusd + valor_te + valor_bandeira (valores COM tributos ja embutidos).
+    # COSIP NAO entra na base. Valido para todas as distribuidoras.
+    if icms_b and r.get("valor_tusd") and r.get("valor_te"):
+        base_esp = round(
+            (r.get("valor_tusd")    or 0)
+            + (r.get("valor_te")    or 0)
+            + (r.get("valor_bandeira") or 0),
+            2
         )
-        if base_esp is not None:
-            dif_base     = abs(base_esp - icms_b)
-            dif_base_pct = dif_base / base_esp if base_esp else 0
-            metricas["base_icms_esperada"]  = base_esp
-            metricas["dif_base_icms_R$"]    = round(dif_base, 2)
-            metricas["formula_icms"]        = "STF/2021" if nova_f else "anterior_03-2023"
-            if dif_base_pct > 0.001:  # tolerancia 0.1%
-                flags_div.append(
-                    f"base ICMS: fatura={icms_b:.2f} vs esperado={base_esp:.2f} "
-                    f"(dif={icms_b - base_esp:+.2f}, formula {'nova STF' if nova_f else 'antiga'}) "
-                    f"-- verificar composicao da base de calculo"
-                )
-        else:
-            metricas["dif_base_icms_R$"] = None
+        dif_base = abs(base_esp - icms_b)
+        dif_pct  = dif_base / icms_b if icms_b else 0
+        metricas["base_icms_esperada"] = base_esp
+        metricas["dif_base_icms_R$"]   = round(dif_base, 2)
+        if dif_pct > 0.001:
+            flags_div.append(
+                f"base ICMS: fatura={icms_b:.2f} vs esperado={base_esp:.2f} "
+                f"(dif={icms_b - base_esp:+.2f}) "
+                f"-- composicao incorreta: esperado TUSD+TE+Bandeira, sem COSIP"
+            )
     else:
         metricas["dif_base_icms_R$"] = None
+
+    # 5c. Tarifa COM tributos — verificar calculo a partir da tarifa SEM tributos
+    # Formula nova (STF RE 574.706, >= 03/2023): tarifa_com = tarifa_sem / ((1-ICMS)*(1-PIS-COFINS))
+    # Formula antiga (< 03/2023):                tarifa_com = tarifa_sem / (1-ICMS-PIS-COFINS)
+    if icms_a and r.get("pis_aliq") and r.get("cofins_aliq"):
+        ref_dt2      = _parse_ref(r.get("ref_mes_ano"))
+        nova_formula = (ref_dt2 is not None and ref_dt2 >= _DATA_NOVA_FORMULA_ICMS)
+        icms2   = icms_a / 100
+        pis2    = r.get("pis_aliq") / 100
+        cofins2 = r.get("cofins_aliq") / 100
+        denom   = (1 - icms2) * (1 - (pis2 + cofins2)) if nova_formula else 1 - (icms2 + pis2 + cofins2)
+        metricas["formula_icms"] = "STF/2021" if nova_formula else "anterior_03-2023"
+        if denom > 0:
+            for nome_t, key_sem_t, key_com_t in [
+                ("TUSD", "tarifa_tusd_sem_trib", "preco_tusd"),
+                ("TE",   "tarifa_te_sem_trib",   "preco_te"),
+            ]:
+                tar_sem_t   = r.get(key_sem_t)
+                preco_com_t = r.get(key_com_t)
+                if tar_sem_t and preco_com_t:
+                    preco_exp_t = round(tar_sem_t / denom, 8)
+                    dif_pct_t   = abs(preco_com_t - preco_exp_t) / preco_exp_t if preco_exp_t else 0
+                    metricas[f"preco_com_{nome_t}_esp"] = preco_exp_t
+                    if dif_pct_t > 0.0005:
+                        flags_div.append(
+                            f"tarifa COM {nome_t}: fatura={preco_com_t:.8f} "
+                            f"vs esperado={preco_exp_t:.8f} "
+                            f"(sem={tar_sem_t:.8f}, dif={preco_com_t - preco_exp_t:+.8f}, "
+                            f"formula {'nova STF' if nova_formula else 'antiga'})"
+                        )
 
     # 5c. SCEE -- auditoria da compensacao
     if r.get("is_scee"):
