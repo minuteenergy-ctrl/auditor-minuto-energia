@@ -199,8 +199,23 @@ def _chk(val, tol):
 
 
 # Decisao STF 05/2021 (RE 574.706): exclusao do ICMS da base do PIS/COFINS.
-# A Neoenergia PE passou a aplicar a nova formula nas faturas a partir de ~03/2023.
-_DATA_NOVA_FORMULA_ICMS = datetime(2023, 3, 1)
+# NAO detectar pela data: cada distribuidora adotou em momentos diferentes.
+# Detectar pela propria fatura: base_ICMS != base_PIS/COFINS -> formula nova (STF).
+_DATA_NOVA_FORMULA_ICMS = datetime(2023, 3, 1)  # mantido apenas como referencia
+
+
+def _detectar_formula_stf(r):
+    """
+    Detecta se a fatura aplica a formula STF RE 574.706 (ICMS excluido da base PIS/COFINS).
+    Criterio: base ICMS != base PIS/COFINS na fatura -> formula nova (STF).
+              base ICMS == base PIS/COFINS -> formula antiga.
+    Mais robusto que deteccao por data, pois le a formula efetivamente aplicada.
+    """
+    icms_b = r.get("icms_base")
+    pis_b  = r.get("pis_base")
+    if icms_b is None or pis_b is None:
+        return False
+    return abs(icms_b - pis_b) > 0.01
 
 
 def _base_icms_esperada(valor_tusd, valor_te, valor_bandeira,
@@ -393,8 +408,7 @@ def _auditar_mt(r):
     # Calculo via SEM tributos: net_sem / denom = base_com (equivalente a soma dos COM).
     if icms_b and icms_a and r.get("pis_aliq") and r.get("cofins_aliq"):
         # Pre-calcula denominador para formula STF
-        ref_dt_mt    = _parse_ref(r.get("ref_mes_ano"))
-        nova_f_mt    = (ref_dt_mt is not None and ref_dt_mt >= _DATA_NOVA_FORMULA_ICMS)
+        nova_f_mt    = _detectar_formula_stf(r)
         icms_mt   = icms_a / 100
         pis_mt    = r.get("pis_aliq") / 100
         cofins_mt = r.get("cofins_aliq") / 100
@@ -463,8 +477,7 @@ def _auditar_mt(r):
     if icms_a and r.get("pis_aliq") and r.get("cofins_aliq"):
         # denom_mt pode nao existir se icms_b era None em 6b — recalcular se necessario
         if "denom_mt" not in locals():
-            ref_dt_mt = _parse_ref(r.get("ref_mes_ano"))
-            nova_f_mt = (ref_dt_mt is not None and ref_dt_mt >= _DATA_NOVA_FORMULA_ICMS)
+            nova_f_mt = _detectar_formula_stf(r)
             icms_mt   = icms_a / 100
             pis_mt    = r.get("pis_aliq") / 100
             cofins_mt = r.get("cofins_aliq") / 100
@@ -745,13 +758,12 @@ def auditar(r):
     # Formula nova (STF RE 574.706, >= 03/2023): tarifa_com = tarifa_sem / ((1-ICMS)*(1-PIS-COFINS))
     # Formula antiga (< 03/2023):                tarifa_com = tarifa_sem / (1-ICMS-PIS-COFINS)
     if icms_a and r.get("pis_aliq") and r.get("cofins_aliq"):
-        ref_dt2      = _parse_ref(r.get("ref_mes_ano"))
-        nova_formula = (ref_dt2 is not None and ref_dt2 >= _DATA_NOVA_FORMULA_ICMS)
+        nova_formula = _detectar_formula_stf(r)
         icms2   = icms_a / 100
         pis2    = r.get("pis_aliq") / 100
         cofins2 = r.get("cofins_aliq") / 100
         denom   = (1 - icms2) * (1 - (pis2 + cofins2)) if nova_formula else 1 - (icms2 + pis2 + cofins2)
-        metricas["formula_icms"] = "STF/2021" if nova_formula else "anterior_03-2023"
+        metricas["formula_icms"] = "STF/2021" if nova_formula else "anterior_STF"
         if denom > 0:
             for nome_t, key_sem_t, key_com_t in [
                 ("TUSD", "tarifa_tusd_sem_trib", "preco_tusd"),
