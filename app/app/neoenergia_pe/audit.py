@@ -6,7 +6,7 @@ Suporta BT (Grupo B) e MT (Grupo A, Tarifa A4 Azul).
 """
 import json
 import unicodedata
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 _DATA_DIR = Path(__file__).parent / "data"
@@ -56,6 +56,64 @@ def _reh_bt_para_periodo(ref_mes_ano):
     """Retorna dict REH BT vigente para ref_mes_ano ('MM/AAAA'), ou None se nao cadastrado."""
     tarifas = _carregar_tarifas()
     return _reh_para_lista(ref_mes_ano, tarifas.get("tarifas_bt", []))
+
+
+def _reh_bt_ponderado(data_lant_str, data_latu_str, lista_rehs):
+    """
+    Calcula tarifas BT ponderadas pelos dias sob cada REH no periodo de leitura.
+    Usa data_oficial (se disponivel no JSON) ou vigencia_inicio como inicio efetivo.
+    Periodo de consumo: dia seguinte a leitura_anterior ate leitura_atual (inclusive).
+    Retorna dict {TUSD_kwh, TE_kwh, reh, ponderado} ou None se datas invalidas.
+    """
+    try:
+        dt_ant = datetime.strptime(data_lant_str, "%d/%m/%Y")
+        dt_atu = datetime.strptime(data_latu_str, "%d/%m/%Y")
+    except (ValueError, TypeError):
+        return None
+
+    total_dias = (dt_atu - dt_ant).days   # = "N DE DIAS" da fatura
+    if total_dias <= 0:
+        return None
+
+    dt_ini = dt_ant + timedelta(days=1)   # primeiro dia de consumo
+
+    # Ordena REHs cronologicamente para calcular quando cada uma termina
+    rehs_ord = sorted(lista_rehs, key=lambda t: t["vigencia_inicio"])
+
+    tusd_pond = te_pond = 0.0
+    reh_labels = []
+
+    for i, t in enumerate(rehs_ord):
+        # Inicio efetivo: data_oficial (data ANEEL real) se disponivel, senao vigencia_inicio
+        ini_str = t.get("data_oficial") or t["vigencia_inicio"]
+        ini = datetime.strptime(ini_str, "%Y-%m-%d")
+
+        # Fim exclusivo: inicio efetivo da proxima REH
+        if i + 1 < len(rehs_ord):
+            prox_str = rehs_ord[i + 1].get("data_oficial") or rehs_ord[i + 1]["vigencia_inicio"]
+            fim_exc = datetime.strptime(prox_str, "%Y-%m-%d")
+        else:
+            fim_exc = datetime(9999, 12, 31)
+
+        # Overlap entre periodo de consumo [dt_ini, dt_atu+1) e [ini, fim_exc)
+        ov_ini = max(dt_ini, ini)
+        ov_fim = min(dt_atu + timedelta(days=1), fim_exc)
+
+        if ov_fim > ov_ini:
+            dias = (ov_fim - ov_ini).days
+            tusd_pond += dias * t["TUSD_kwh"]
+            te_pond   += dias * t["TE_kwh"]
+            reh_labels.append(f"{t['reh']} ({dias}d/{total_dias}d)")
+
+    if not reh_labels:
+        return None
+
+    return {
+        "TUSD_kwh":  round(tusd_pond / total_dias, 8),
+        "TE_kwh":    round(te_pond   / total_dias, 8),
+        "reh":       " + ".join(reh_labels),
+        "ponderado": len(reh_labels) > 1,
+    }
 
 
 def _reh_mt_para_periodo(ref_mes_ano, subgrupo="A4", modalidade="Azul"):
@@ -524,7 +582,16 @@ def auditar(r):
         metricas["dif_total_%"]  = None
 
     # 7. REH BT — validacao de tarifas sem tributos
-    reh_bt = _reh_bt_para_periodo(r.get("ref_mes_ano"))
+    #    Usa ponderacao proporcional pelos dias sob cada REH no periodo de leitura
+    #    quando data_leitura_anterior e data_leitura_atual estiverem disponiveis.
+    lista_bt = _carregar_tarifas().get("tarifas_bt", [])
+    reh_bt = _reh_bt_ponderado(
+        r.get("data_leitura_anterior"), r.get("data_leitura_atual"), lista_bt
+    )
+    if reh_bt is None:
+        # Fallback: lookup simples por ref_mes_ano (sem datas de leitura)
+        reh_bt = _reh_bt_para_periodo(r.get("ref_mes_ano"))
+
     if reh_bt is None:
         flags_inv.append(
             f"REH BT: nenhuma REH cadastrada para periodo {r.get('ref_mes_ano')} "
@@ -532,6 +599,8 @@ def auditar(r):
         )
     else:
         metricas["reh_bt"] = reh_bt.get("reh")
+        if reh_bt.get("ponderado"):
+            metricas["reh_bt_ponderado"] = True
         tusd_sem = r.get("tarifa_tusd_sem_trib")
         te_sem   = r.get("tarifa_te_sem_trib")
         if tusd_sem is not None:
