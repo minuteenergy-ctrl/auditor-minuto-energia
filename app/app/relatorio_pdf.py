@@ -376,9 +376,10 @@ def gerar_relatorio_pdf(cliente_nome, registros, parceiro_nome="", valor_recuper
     TOT_INV  = sum(d["inv"] for d in ucs_dict.values())
     TOT_DIV  = sum(d["div"] for d in ucs_dict.values())
     RS_OK    = sum(r.get("total_fatura") or 0 for r in registros if r.get("__triagem__") == "OK")
-    RS_INV   = sum(r.get("total_fatura") or 0 for r in registros if r.get("__triagem__") == "INVESTIGAR")
-    RS_DIV   = sum(r.get("total_fatura") or 0 for r in registros if r.get("__triagem__") == "DIVERGENCIA")
-    RS_GERAL = sum(r.get("total_fatura") or 0 for r in registros)
+    RS_INV         = sum(r.get("total_fatura") or 0 for r in registros if r.get("__triagem__") == "INVESTIGAR")
+    RS_DIV         = sum(r.get("total_fatura") or 0 for r in registros if r.get("__triagem__") == "DIVERGENCIA")
+    RS_RECUPERAVEL = sum(r.get("__dif_total__") or 0 for r in registros if r.get("__triagem__") in ("DIVERGENCIA", "INVESTIGAR"))
+    RS_GERAL       = sum(r.get("total_fatura") or 0 for r in registros)
     N_FAT    = len(registros)
     N_UCS    = len(ucs_dict)
     TOT_PROB = TOT_INV + TOT_DIV
@@ -467,7 +468,7 @@ def gerar_relatorio_pdf(cliente_nome, registros, parceiro_nome="", valor_recuper
     story.append(Paragraph("Resultados Consolidados", ST["section"]))
     story.append(HRFlowable(width="100%", thickness=1.5, color=LIME, spaceAfter=8))
 
-    _val_rec = valor_recuperavel if valor_recuperavel is not None else RS_DIV
+    _val_rec = valor_recuperavel if valor_recuperavel is not None else RS_RECUPERAVEL
     kpis = [
         (str(TOT_OK),         "faturas OK",                    C_GREEN),
         (str(TOT_PROB),       "faturas com ocorrências",        C_BLUE),
