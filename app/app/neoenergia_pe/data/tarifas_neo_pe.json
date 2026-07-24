@@ -9,7 +9,12 @@
     "Periodos fora desta tabela emitem INVESTIGAR no audit.py.",
     "REGRA: valores devem ser extraidos da Resolucao Homologatoria ANEEL oficial,",
     "NUNCA de outra fatura. Subclasses (B1, B2, B3...) podem ter tarifas diferentes.",
-    "Quando subclasses diferem, usar campo 'por_subclasse'. Fallback: TUSD_kwh/TE_kwh raiz."
+    "Quando subclasses diferem, usar campo 'por_subclasse'. Fallback: TUSD_kwh/TE_kwh raiz.",
+    "",
+    "BAIXA RENDA: campo 'baixa_renda_faixas' em cada REH BT contém tarifas sem tributos",
+    "por faixa de consumo (R$/kWh), extraidas das tabelas de cada REH ANEEL.",
+    "REHs 2861-3451: 4 faixas (0-30, 30-100, 100-220, >220 kWh), descontos 65/40/10/0%.",
+    "REH 3583: 2 faixas (0-80, >80 kWh) conforme Lei 15.235/2025 — faixa1 = 100% desconto."
   ],
 
   "tarifas_bt": [
@@ -17,33 +22,112 @@
       "reh": "REH 3.583/2026",
       "vigencia_inicio": "2026-05-01",
       "vigencia_fim": null,
-      "_fonte": "Faturas 315301753984.pdf e 338175471354.pdf REF 05/2026 — PENDENTE verificacao na resolucao ANEEL (valores extraidos de faturas B3)",
-      "_aviso": "TUSD_kwh e TE_kwh raiz sao provisorios (B3) — confirmar via REH 3.583 publicada pela ANEEL",
-      "TUSD_kwh": 0.51067724,
-      "TE_kwh":   0.27283103,
+      "data_oficial": "2026-04-29",
+      "_fonte_data_oficial": "REH 3.583/2026 Art. 3: 'estarão em vigor no período de 29 de abril de 2026...'",
+      "_fonte": "REH 3.583/2026 ANEEL, publicada em 28/04/2026 — Tabela 2 (Grupo B), coluna Tarifas Base Economica (R$/MWh convertido para R$/kWh / 1000)",
+      "_nota": "B1/B2/B3 Convencional e Pre-pagamento tem o mesmo TUSD e TE base. Modalidade Branca e Baixa Renda tem tarifas por posto e subclasse distintas.",
+      "TUSD_kwh": 0.53521,
+      "TE_kwh":   0.26365,
       "por_subclasse": {
         "B1": {
-          "_fonte": "Fatura 312551967324 (B1 Residencial, REF 06/2026) — confirmado por Janaina",
-          "TUSD_kwh": 0.53521000,
-          "TE_kwh":   0.26365000
-        }
+          "TUSD_kwh": 0.53521, "TE_kwh": 0.26365,
+          "baixa_renda":    { "TUSD_kwh": 0.42792, "TE_kwh": 0.24299 },
+          "desconto_social":{ "TUSD_kwh": 0.43748, "TE_kwh": 0.25392 },
+          "branca": {
+            "ponta": { "TUSD_kwh": 1.27233, "TE_kwh": 0.43088 },
+            "int":   { "TUSD_kwh": 0.85202, "TE_kwh": 0.24845 },
+            "fp":    { "TUSD_kwh": 0.43170, "TE_kwh": 0.24845 }
+          }
+        },
+        "B2": {
+          "TUSD_kwh": 0.53521, "TE_kwh": 0.26365,
+          "branca": {
+            "ponta": { "TUSD_kwh": 1.25664, "TE_kwh": 0.43088 },
+            "int":   { "TUSD_kwh": 0.84261, "TE_kwh": 0.24845 },
+            "fp":    { "TUSD_kwh": 0.42856, "TE_kwh": 0.24845 }
+          }
+        },
+        "B3": {
+          "TUSD_kwh": 0.53521, "TE_kwh": 0.26365,
+          "branca": {
+            "ponta": { "TUSD_kwh": 1.19391, "TE_kwh": 0.43088 },
+            "int":   { "TUSD_kwh": 0.80496, "TE_kwh": 0.24845 },
+            "fp":    { "TUSD_kwh": 0.41602, "TE_kwh": 0.24845 }
+          }
+        },
+        "B4A": { "TUSD_kwh": 0.29437, "TE_kwh": 0.14501 },
+        "B4B": { "TUSD_kwh": 0.32113, "TE_kwh": 0.15819 }
+      },
+      "baixa_renda_faixas": {
+        "_fonte": "REH 3.583/2026 ANEEL Tabela 2 — Baixa Renda; Lei 15.235/2025 (2 faixas: 0-80kWh e >80kWh)",
+        "_nota": "Faixa 1 (0-80 kWh): 100% de desconto — TUSD e TE = R$0,00. Faixa 2 (>80 kWh): sem desconto, tarifa base.",
+        "n_faixas": 2,
+        "faixas": [
+          { "fx": 1, "de_kwh": 0,  "ate_kwh": 80,   "desconto_pct": 100, "TUSD_kwh": 0.00000, "TE_kwh": 0.00000 },
+          { "fx": 2, "de_kwh": 80, "ate_kwh": null,  "desconto_pct": 0,   "TUSD_kwh": 0.42792, "TE_kwh": 0.24299 }
+        ]
       }
     },
     {
       "reh": "REH 3.451/2025",
       "vigencia_inicio": "2025-05-01",
       "vigencia_fim": "2026-04-30",
+      "data_oficial": "2025-04-29",
+      "_fonte_data_oficial": "REH 3.451/2025 Art. 3: 'estarão em vigor no período de 29 de abril de 2025...'",
       "_fonte": "Snippet PDF neoenergia.com: B1/B3 Consumo Ativo 0,48778000 0,28140000; confirmado em faturas do periodo",
       "TUSD_kwh": 0.48778000,
-      "TE_kwh":   0.28140000
+      "TE_kwh":   0.28140000,
+      "baixa_renda_faixas": {
+        "_fonte": "REH 3.451/2025 ANEEL — Tabela 2 Baixa Renda. TUSD_base=405,70 R$/MWh, TE_base=276,67 R$/MWh. Descontos 65%/40%/10%/0% por faixa.",
+        "n_faixas": 4,
+        "faixas": [
+          { "fx": 1, "de_kwh": 0,   "ate_kwh": 30,  "desconto_pct": 65, "TUSD_kwh": 0.14200, "TE_kwh": 0.09683 },
+          { "fx": 2, "de_kwh": 30,  "ate_kwh": 100, "desconto_pct": 40, "TUSD_kwh": 0.24342, "TE_kwh": 0.16600 },
+          { "fx": 3, "de_kwh": 100, "ate_kwh": 220, "desconto_pct": 10, "TUSD_kwh": 0.36513, "TE_kwh": 0.24900 },
+          { "fx": 4, "de_kwh": 220, "ate_kwh": null,"desconto_pct": 0,  "TUSD_kwh": 0.40570, "TE_kwh": 0.27667 }
+        ]
+      }
     },
     {
       "reh": "REH 3.325/2024",
       "vigencia_inicio": "2024-05-01",
       "vigencia_fim": "2025-04-30",
+      "data_oficial": "2024-04-29",
+      "_fonte_data_oficial": "REH 3.325/2024 Art. 3: 'estarão em vigor no período de 29 de abril de 2024...'",
       "_fonte": "Snippet PDF neoenergia.com: B1/B3 Consumo Ativo 0,41050000 0,33382000; confirmado em faturas do periodo",
       "TUSD_kwh": 0.41050000,
-      "TE_kwh":   0.33382000
+      "TE_kwh":   0.33382000,
+      "baixa_renda_faixas": {
+        "_fonte": "REH 3.325/2024 ANEEL — Tabela 2 Baixa Renda. TUSD_base=348,88 R$/MWh, TE_base=329,66 R$/MWh. Descontos 65%/40%/10%/0% por faixa.",
+        "n_faixas": 4,
+        "faixas": [
+          { "fx": 1, "de_kwh": 0,   "ate_kwh": 30,  "desconto_pct": 65, "TUSD_kwh": 0.12211, "TE_kwh": 0.11538 },
+          { "fx": 2, "de_kwh": 30,  "ate_kwh": 100, "desconto_pct": 40, "TUSD_kwh": 0.20933, "TE_kwh": 0.19780 },
+          { "fx": 3, "de_kwh": 100, "ate_kwh": 220, "desconto_pct": 10, "TUSD_kwh": 0.31399, "TE_kwh": 0.29669 },
+          { "fx": 4, "de_kwh": 220, "ate_kwh": null,"desconto_pct": 0,  "TUSD_kwh": 0.34888, "TE_kwh": 0.32966 }
+        ]
+      }
+    },
+    {
+      "reh": "REH 3.055/2022",
+      "vigencia_inicio": "2022-07-13",
+      "vigencia_fim": "2023-05-31",
+      "data_oficial": "2022-07-13",
+      "_fonte_data_oficial": "REH 3.055/2022 Art. 3: 'estarão em vigor no período de 13 de julho de 2022 a 28 de abril de 2023'",
+      "_fonte": "REH 3.055/2022 ANEEL — Tabela 2 Grupo B. Art. 7: demais tabelas do REH 3.032/2022 permanecem validas (TUSD_conv=384,84 R$/MWh, TE_conv=320,82 R$/MWh inalterados). Apenas BR foi alterado.",
+      "_nota": "Revisao extraordinaria (RTE) que alterou exclusivamente as tarifas Baixa Renda B1. Convencional B1: TUSD=384,84 R$/MWh e TE=320,82 R$/MWh (idem REH 3.032/2022 por forca do Art. 7).",
+      "TUSD_kwh": 0.38484000,
+      "TE_kwh":   0.32082000,
+      "baixa_renda_faixas": {
+        "_fonte": "REH 3.055/2022 ANEEL — Tabela 2 Baixa Renda B1. TUSD_base=327,89 R$/MWh, TE_base=320,82 R$/MWh. Descontos 65%/40%/10%/0% por faixa.",
+        "n_faixas": 4,
+        "faixas": [
+          { "fx": 1, "de_kwh": 0,   "ate_kwh": 30,  "desconto_pct": 65, "TUSD_kwh": 0.11476150, "TE_kwh": 0.11228700 },
+          { "fx": 2, "de_kwh": 30,  "ate_kwh": 100, "desconto_pct": 40, "TUSD_kwh": 0.19673400, "TE_kwh": 0.19249200 },
+          { "fx": 3, "de_kwh": 100, "ate_kwh": 220, "desconto_pct": 10, "TUSD_kwh": 0.29510100, "TE_kwh": 0.28873800 },
+          { "fx": 4, "de_kwh": 220, "ate_kwh": null,"desconto_pct": 0,  "TUSD_kwh": 0.32789000, "TE_kwh": 0.32082000 }
+        ]
+      }
     },
     {
       "reh": "REH 3.195/2023",
@@ -53,23 +137,57 @@
       "_fonte_data_oficial": "Calculado a partir da fatura 310951760385.pdf (REF 06/2023, leitura 12/05 a 12/06): 1d x 0.38484 + 30d x 0.42538 / 31 = 0.42407225 (match exato)",
       "_fonte": "Faturas 313251698718.pdf (B3, REF 02/2024) e 313601676559.pdf (B1, REF 01/2024) — tarifa extraida diretamente",
       "TUSD_kwh": 0.42538000,
-      "TE_kwh":   0.33909000
+      "TE_kwh":   0.33909000,
+      "baixa_renda_faixas": {
+        "_fonte": "REH 3.195/2023 ANEEL — Tabela 2 Baixa Renda. TUSD_base=361,00 R$/MWh, TE_base=335,96 R$/MWh. Descontos 65%/40%/10%/0% por faixa.",
+        "n_faixas": 4,
+        "faixas": [
+          { "fx": 1, "de_kwh": 0,   "ate_kwh": 30,  "desconto_pct": 65, "TUSD_kwh": 0.12635, "TE_kwh": 0.11759 },
+          { "fx": 2, "de_kwh": 30,  "ate_kwh": 100, "desconto_pct": 40, "TUSD_kwh": 0.21660, "TE_kwh": 0.20158 },
+          { "fx": 3, "de_kwh": 100, "ate_kwh": 220, "desconto_pct": 10, "TUSD_kwh": 0.32490, "TE_kwh": 0.30236 },
+          { "fx": 4, "de_kwh": 220, "ate_kwh": null,"desconto_pct": 0,  "TUSD_kwh": 0.36100, "TE_kwh": 0.33596 }
+        ]
+      }
     },
     {
       "reh": "REH 3.032/2022",
       "vigencia_inicio": "2022-05-01",
-      "vigencia_fim": "2023-05-31",
+      "vigencia_fim": "2022-07-12",
+      "data_oficial": "2022-04-29",
+      "_fonte_data_oficial": "REH 3.032/2022 Art. 3: 'estarão em vigor no período de 29 de abril de 2022...'",
       "_fonte": "Faturas 300005288238.pdf (B3, REF 01/2023) e 310052634167.pdf (B1, REF 05/2023) — tarifa extraida diretamente",
       "TUSD_kwh": 0.38484000,
-      "TE_kwh":   0.32082000
+      "TE_kwh":   0.32082000,
+      "baixa_renda_faixas": {
+        "_fonte": "REH 3.032/2022 ANEEL — Tabela 2 Baixa Renda. TUSD_base=342,76 R$/MWh, TE_base=333,64 R$/MWh. Descontos 65%/40%/10%/0% por faixa.",
+        "n_faixas": 4,
+        "faixas": [
+          { "fx": 1, "de_kwh": 0,   "ate_kwh": 30,  "desconto_pct": 65, "TUSD_kwh": 0.11997, "TE_kwh": 0.11677 },
+          { "fx": 2, "de_kwh": 30,  "ate_kwh": 100, "desconto_pct": 40, "TUSD_kwh": 0.20566, "TE_kwh": 0.20018 },
+          { "fx": 3, "de_kwh": 100, "ate_kwh": 220, "desconto_pct": 10, "TUSD_kwh": 0.30848, "TE_kwh": 0.30028 },
+          { "fx": 4, "de_kwh": 220, "ate_kwh": null,"desconto_pct": 0,  "TUSD_kwh": 0.34276, "TE_kwh": 0.33364 }
+        ]
+      }
     },
     {
       "reh": "REH 2.861/2021",
       "vigencia_inicio": "2021-04-01",
       "vigencia_fim": "2022-04-30",
+      "data_oficial": "2021-04-29",
+      "_fonte_data_oficial": "REH 2.861/2021 Art. 3: 'estarão em vigor no período de 29 de abril de 2021...'",
       "_fonte": "Fatura JL2.pdf (ANTIGO, REF 02/2022) — tarifa_tusd_sem_trib e tarifa_te_sem_trib extraidos",
       "TUSD_kwh": 0.34515000,
-      "TE_kwh":   0.27433000
+      "TE_kwh":   0.27433000,
+      "baixa_renda_faixas": {
+        "_fonte": "REH 2.861/2021 ANEEL — Tabela 2 Baixa Renda. TUSD_base=303,01 R$/MWh, TE_base=274,33 R$/MWh. Descontos 65%/40%/10%/0% por faixa.",
+        "n_faixas": 4,
+        "faixas": [
+          { "fx": 1, "de_kwh": 0,   "ate_kwh": 30,  "desconto_pct": 65, "TUSD_kwh": 0.10605, "TE_kwh": 0.09602 },
+          { "fx": 2, "de_kwh": 30,  "ate_kwh": 100, "desconto_pct": 40, "TUSD_kwh": 0.18181, "TE_kwh": 0.16460 },
+          { "fx": 3, "de_kwh": 100, "ate_kwh": 220, "desconto_pct": 10, "TUSD_kwh": 0.27271, "TE_kwh": 0.24690 },
+          { "fx": 4, "de_kwh": 220, "ate_kwh": null,"desconto_pct": 0,  "TUSD_kwh": 0.30301, "TE_kwh": 0.27433 }
+        ]
+      }
     }
   ],
 
