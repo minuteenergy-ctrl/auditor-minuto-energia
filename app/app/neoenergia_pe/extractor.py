@@ -156,6 +156,34 @@ def _parse_antigo(text, tables):
         m = re.search(r"((?:Bif.sico|Monof.sico|Trif.sico)\b[^,\n]*)", text, re.IGNORECASE)
         if m: d["tipo_fornecimento"] = m.group(1).strip()
 
+    # ── Histórico de consumo (formato antigo: "MES AA kWh" no final de cada linha) ──
+    historico = []
+    seen_refs = set()
+    for line in text.split("\n"):
+        m = re.search(r"\b([A-Z]{3})\s+(\d{2})\s+(\d{1,5})\s*$", line)
+        if m:
+            mes, ano2, kwh_s = m.group(1), m.group(2), m.group(3)
+            ref_key = mes + ano2
+            if ref_key not in seen_refs:
+                seen_refs.add(ref_key)
+                historico.append({
+                    "mes": mes, "ano": "20" + ano2,
+                    "consumo_kwh": int(kwh_s), "dias": None,
+                })
+    d["historico_consumo"] = historico
+
+    # ── Multas, Juros e IPCA (formato antigo: "... NR - DD/MM/AA valor") ─────
+    multa_vals = re.findall(r"Multa\s+por\s+atraso-NF\s+\S+\s+-\s+\d{2}/\d{2}/\d{2}\s+([\d.,]+)", text)
+    if multa_vals:
+        d["valor_multas_nf"] = round(sum(_num(v) or 0 for v in multa_vals), 2)
+    juros_vals = re.findall(r"Juros\s+por\s+atraso-NF\s+\S+\s+-\s+\d{2}/\d{2}/\d{2}\s+([\d.,]+)", text)
+    if juros_vals:
+        d["valor_juros_nf"] = round(sum(_num(v) or 0 for v in juros_vals), 2)
+    # "Atualizacao IPCA-NF NR - DD.MM.AA valor" (datas com ponto no antigo)
+    ipca_vals = re.findall(r"Atualizacao\s+IPCA-NF\s+\S+\s+-\s+[\d.]+\s+([\d.,]+)", text)
+    if ipca_vals:
+        d["valor_ipca"] = round(sum(_num(v) or 0 for v in ipca_vals), 2)
+
     return d
 
 
@@ -408,6 +436,10 @@ def _parse_danfe(text, tables, words=None):
         m = re.search(r"Parc\d+/\d+\s+\S+\s+([\d.,]+)", text)
         if m: d["valor_parcelamento"] = _num(m.group(1))
 
+    # ── Segunda Via Fatura ────────────────────────────────────────────────
+    m = re.search(r"Segunda\s+Via\s+Fatura\s+([\d.,]+)", text, re.IGNORECASE)
+    if m: d["valor_segunda_via"] = _num(m.group(1))
+
     # ── Devolucao de Credito (negativo, trailing dash) ────────────────────
     m = re.search(r"Devolu.{1,5}o\s+de\s+Cr.dito\s+([\d.,]+)-", text, re.IGNORECASE)
     if m:
@@ -463,6 +495,13 @@ def _parse_danfe(text, tables, words=None):
     m = re.search(r"\bICMS\b\s+([\d.,]+)\s+([\d.,]+)\s+([\d.,]+)", text)
     if m:
         d["icms_base"] = _num(m.group(1)); d["icms_aliq"] = _num(m.group(2)); d["icms_valor"] = _num(m.group(3))
+    else:
+        # Isencao: ICMS exibe apenas base e valor, sem aliquota (ex: "ICMS 0,00 0,00")
+        m2 = re.search(r"\bICMS\b\s+([\d.,]+)\s+([\d.,]+)", text)
+        if m2:
+            d["icms_base"]  = _num(m2.group(1))
+            d["icms_aliq"]  = 0.0
+            d["icms_valor"] = _num(m2.group(2))
 
     # ── total da fatura ───────────────────────────────────────────────────
     for row in main_tbl:
@@ -516,6 +555,22 @@ def _parse_danfe(text, tables, words=None):
     if "tipo_fornecimento" not in d:
         m = re.search(r"TIPO DE FORNECIMENTO[:\s]+(.+?)(?:\n|$)", text, re.IGNORECASE)
         if m: d["tipo_fornecimento"] = m.group(1).strip()
+
+    # ── Histórico de consumo (DANFE: "MMMAA kWh dias" no final de cada linha) ──
+    historico = []
+    seen_refs = set()
+    for line in text.split("\n"):
+        m = re.search(r"\b([A-Z]{3})(\d{2})\s+(\d{1,5})\s+(\d{1,3})\s*$", line)
+        if m:
+            mes, ano2, kwh_s, dias_s = m.group(1), m.group(2), m.group(3), m.group(4)
+            ref_key = mes + ano2
+            if ref_key not in seen_refs:
+                seen_refs.add(ref_key)
+                historico.append({
+                    "mes": mes, "ano": "20" + ano2,
+                    "consumo_kwh": int(kwh_s), "dias": int(dias_s),
+                })
+    d["historico_consumo"] = historico
 
     return d
 
@@ -716,6 +771,123 @@ def parse_fatura(pdf_path):
                 result["erro"]   = "Layout nao reconhecido"
                 return result
             result.update(fields)
+
+            # ── Pos-processamento BT: isencao ICMS e Baixa Renda faixas ─────────
+            # Aplica a todos os layouts (DANFE e ANTIGO), exceto MT.
+            if not result.get("is_mt"):
+                # Isencao de ICMS (ex: Fernando de Noronha — Art.9, XLVIII, f RICMS-PE)
+                if re.search(r"Isen[çc][aã]o do ICMS", text, re.IGNORECASE):
+                    result["is_icms_isento"] = True
+                    result["icms_aliq"]      = 0.0
+                    result.setdefault("icms_base",  0.0)
+                    result.setdefault("icms_valor", 0.0)
+
+                # Baixa Renda — faixas de consumo TUSD e TE.
+                # Funciona para DANFE (Consumo-TUSD_0_30 kWh ...) e
+                # ANTIGO (Consumo-TUSD ate 30 kWh / superior a 30 ate 100 kWh ...).
+                # Regex: captura (qty) e (valor), ignora preco_unit.
+                tusd_fx = re.findall(
+                    r"Consumo-TUSD[^k\n]*kWh\s+([\d.,]+)\s+[\d.,]+\s+([\d.,]+)", text
+                )
+                if len(tusd_fx) > 1:
+                    result["consumo_kwh_tusd_qtd"] = round(
+                        sum(_num(q) or 0 for q, _ in tusd_fx), 2
+                    )
+                    result["valor_tusd"]     = round(
+                        sum(_num(v) or 0 for _, v in tusd_fx), 2
+                    )
+                    result["is_baixa_renda"] = True
+                    result.pop("preco_tusd", None)
+                    result.pop("tarifa_tusd_sem_trib", None)
+                    # Limpar cosip/icms_cde contaminados pela leitura posicional das faixas
+                    # Re-extrair do texto para garantir valor correto (ou ausencia)
+                    result.pop("cosip", None)
+                    result.pop("icms_cde", None)
+                    _icde = re.findall(r"ICMS-CDE\s+\S+\s+([\d.,]+)", text)
+                    _mc   = re.search(r"Ilum\.?\s+P.b\.?\s+Municipal\s+([\d.,]+)", text)
+                    if _mc:
+                        result["cosip"] = _num(_mc.group(1))
+                    if _icde:
+                        result["icms_cde"] = round(sum(_num(v) or 0 for v in _icde), 2)
+
+                te_fx = re.findall(
+                    r"Consumo-TE[^k\n]*kWh\s+([\d.,]+)\s+[\d.,]+\s+([\d.,]+)", text
+                )
+                if len(te_fx) > 1:
+                    result["consumo_kwh_te_qtd"] = round(
+                        sum(_num(q) or 0 for q, _ in te_fx), 2
+                    )
+                    result["valor_te"]       = round(
+                        sum(_num(v) or 0 for _, v in te_fx), 2
+                    )
+                    result.pop("preco_te", None)
+                    result.pop("tarifa_te_sem_trib", None)
+
+                # Baixa Renda: tarifa sem tributos por faixa (TUSD e TE).
+                # Formato antigo (ANTIGO/DANFE pre-REH3195): linha separada na secao
+                #   "Tarifas Aplicadas" com padrao "Consumo-TUSD[desc] kWh 0,XXXXXXXX"
+                #   — kWh diretamente seguido de numero 0,xxxxx (sem qty antes).
+                # Formato novo (DANFE REH3195+): tarifa_sem embutida no final de cada
+                #   linha de consumo — ultimo 0,\d{7,} da linha.
+                if result.get("is_baixa_renda") and (tusd_fx or te_fx):
+                    def _br_tarifas_sem(cons_lines):
+                        # Formato antigo: linha separada com kWh 0,XXXXX (sem qty antes do kWh)
+                        sem_lines = [
+                            l for l in cons_lines
+                            if re.search(r'kWh\s+0,\d{5,}', l)
+                            and not re.search(r'\d,\d{2}\s+0,\d{5,}', l)
+                        ]
+                        if sem_lines:
+                            return [
+                                _num(re.search(r'kWh\s+(0,\d{5,})', l).group(1))
+                                for l in sem_lines
+                            ]
+                        # Formato novo: ultimo 0,\d{7,} de cada linha de consumo
+                        out = []
+                        for l in cons_lines:
+                            longs = re.findall(r'0,\d{7,}', l)
+                            if len(longs) >= 2:
+                                out.append(_num(longs[-1]))
+                        return out
+
+                    all_lines  = text.split('\n')
+                    tusd_lines = [l for l in all_lines if 'Consumo-TUSD' in l and 'kWh' in l]
+                    te_lines   = [l for l in all_lines if 'Consumo-TE'   in l and 'kWh' in l]
+                    tusd_sems  = _br_tarifas_sem(tusd_lines)
+                    te_sems    = _br_tarifas_sem(te_lines)
+
+                    result['n_faixas_br'] = len(tusd_fx)
+                    for i, (qty, val) in enumerate(tusd_fx):
+                        result[f'tusd_fx{i+1}_qtd'] = _num(qty)
+                        result[f'tusd_fx{i+1}_val'] = _num(val)
+                        if i < len(tusd_sems):
+                            result[f'tusd_fx{i+1}_tarifa'] = tusd_sems[i]
+                    for i, (qty, val) in enumerate(te_fx):
+                        result[f'te_fx{i+1}_qtd'] = _num(qty)
+                        result[f'te_fx{i+1}_val'] = _num(val)
+                        if i < len(te_sems):
+                            result[f'te_fx{i+1}_tarifa'] = te_sems[i]
+
+                if re.search(r"BAIXA RENDA", text, re.IGNORECASE):
+                    result["is_baixa_renda"] = True
+
+                # ── Cleanup universal: cosip/icms_cde so validos se confirmados por texto ──
+                # O parser posicional da tabela pode contaminar esses campos com
+                # multas, juros, parcelamentos, segunda via, etc.
+                _cosip_conf = (
+                    re.search(r"Ilum\.?\s+P.b\.?\s+Municipal\s+[\d.,]+", text) or
+                    re.search(r"Contrib\.?\s+Ilum\.?\s+P.blica\s+Municipal\s+[\d.,]+", text)
+                )
+                if not _cosip_conf:
+                    result.pop("cosip", None)
+
+                _icde_conf = (
+                    re.search(r"ICMS-CDE\s+\S+\s+[\d.,]+", text) or
+                    re.search(r"ICMS\s+Subven[çc][aã]o-CDE", text)
+                )
+                if not _icde_conf:
+                    result.pop("icms_cde", None)
+
     except Exception as e:
         result["erro"] = str(e)
     return result

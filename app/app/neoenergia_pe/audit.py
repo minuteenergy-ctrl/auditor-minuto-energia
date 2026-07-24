@@ -10,7 +10,13 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 _DATA_DIR = Path(__file__).parent / "data"
-_TARIFAS = None
+_TARIFAS  = None
+
+_MES_ABREV = {
+    1: "JAN", 2: "FEV", 3: "MAR",  4: "ABR",
+    5: "MAI", 6: "JUN", 7: "JUL",  8: "AGO",
+    9: "SET", 10:"OUT", 11:"NOV", 12:"DEZ",
+}
 
 
 def _carregar_tarifas():
@@ -80,6 +86,84 @@ def _reh_bt_para_periodo(ref_mes_ano, subclasse=None):
             t["TUSD_kwh"] = sub.get("TUSD_kwh", t["TUSD_kwh"])
             t["TE_kwh"]   = sub.get("TE_kwh",   t["TE_kwh"])
     return t
+
+
+def _br_faixas_para_periodo(data_lant_str, data_latu_str, lista_rehs):
+    """
+    Retorna lista de faixas BR com tarifas ponderadas pelos dias sob cada REH.
+    Cada elemento: dict {fx, ate_kwh, de_kwh, TUSD_kwh, TE_kwh}.
+    Quando o periodo de leitura abrange duas REHs, pondera por dias.
+    Retorna None se datas invalidas ou nenhuma REH com baixa_renda_faixas cadastrada.
+    """
+    try:
+        dt_ant = datetime.strptime(data_lant_str, "%d/%m/%Y")
+        dt_atu = datetime.strptime(data_latu_str, "%d/%m/%Y")
+    except (ValueError, TypeError):
+        return None
+
+    total_dias = (dt_atu - dt_ant).days
+    if total_dias <= 0:
+        return None
+
+    dt_ini = dt_ant + timedelta(days=1)
+    rehs_ord = sorted(lista_rehs, key=lambda t: t["vigencia_inicio"])
+
+    # Identificar quais REHs (com baixa_renda_faixas) participam do periodo
+    participantes = []
+    for i, t in enumerate(rehs_ord):
+        brf = t.get("baixa_renda_faixas")
+        if not brf:
+            continue
+        ini_str = t.get("data_oficial") or t["vigencia_inicio"]
+        ini = datetime.strptime(ini_str, "%Y-%m-%d")
+        if i + 1 < len(rehs_ord):
+            prox = rehs_ord[i + 1]
+            prox_str = prox.get("data_oficial") or prox["vigencia_inicio"]
+            fim_exc = datetime.strptime(prox_str, "%Y-%m-%d")
+        else:
+            fim_exc = datetime(9999, 12, 31)
+        ov_ini = max(dt_ini, ini)
+        ov_fim = min(dt_atu + timedelta(days=1), fim_exc)
+        if ov_fim > ov_ini:
+            dias = (ov_fim - ov_ini).days
+            participantes.append((t, brf, dias))
+
+    if not participantes:
+        return None
+
+    if len(participantes) == 1:
+        # Sem ponderacao: retorna faixas diretamente
+        _, brf, _ = participantes[0]
+        return brf["faixas"]
+
+    # Ponderacao por dias entre duas REHs
+    # As faixas devem ter a mesma estrutura (mesmo n_faixas) para ponderar.
+    # Se estruturas diferentes (ex: 4-faixa + 2-faixa), nao ponderar.
+    ns = [p[1]["n_faixas"] for p in participantes]
+    if len(set(ns)) > 1:
+        # Estruturas incompativeis: usa a REH com mais dias
+        participantes.sort(key=lambda x: x[2], reverse=True)
+        return participantes[0][1]["faixas"]
+
+    n_faixas = ns[0]
+    faixas_pond = []
+    for fi in range(n_faixas):
+        tusd_sum = te_sum = 0.0
+        fx_ref = None
+        for t, brf, dias in participantes:
+            fx = brf["faixas"][fi]
+            if fx_ref is None:
+                fx_ref = fx
+            tusd_sum += dias * fx["TUSD_kwh"]
+            te_sum   += dias * fx["TE_kwh"]
+        faixas_pond.append({
+            "fx":       fx_ref["fx"],
+            "de_kwh":   fx_ref["de_kwh"],
+            "ate_kwh":  fx_ref["ate_kwh"],
+            "TUSD_kwh": round(tusd_sum / total_dias, 8),
+            "TE_kwh":   round(te_sum   / total_dias, 8),
+        })
+    return faixas_pond
 
 
 def _reh_bt_ponderado(data_lant_str, data_latu_str, lista_rehs, subclasse=None):
@@ -581,8 +665,14 @@ def auditar(r):
     flags_inv  = []
 
     # 1. Campos criticos ausentes
-    faltam_crit = [c for c in CAMPOS_CRIT if r.get(c) is None]
-    faltam_sec  = [c for c in CAMPOS_SEC  if r.get(c) is None]
+    # Baixa Renda: preco_tusd/preco_te nao aplicaveis (tarifas por faixa)
+    # Isencao ICMS: icms_aliq ausente e esperado (valor zero, sem aliquota na fatura)
+    _crit = [c for c in CAMPOS_CRIT
+             if not (r.get("is_baixa_renda") and c in ("preco_tusd", "preco_te"))]
+    _sec  = [c for c in CAMPOS_SEC
+             if not (r.get("is_icms_isento") and c == "icms_aliq")]
+    faltam_crit = [c for c in _crit if r.get(c) is None]
+    faltam_sec  = [c for c in _sec  if r.get(c) is None]
     if faltam_crit:
         flags_div.append(f"campos criticos ausentes: {', '.join(faltam_crit)}")
     elif faltam_sec:
@@ -620,7 +710,7 @@ def auditar(r):
             )
     else:
         metricas["dif_TUSD_R$"] = None
-        if not faltam_crit:
+        if not faltam_crit and not r.get("is_baixa_renda"):
             flags_inv.append("TUSD: qtd/preco/valor ausente")
 
     # 3. Math TE
@@ -718,6 +808,16 @@ def auditar(r):
     icms_b = r.get("icms_base")
     icms_a = r.get("icms_aliq")
     icms_v = r.get("icms_valor")
+
+    # Isencao de ICMS (ex: Fernando de Noronha — Art.9, XLVIII, f RICMS-PE)
+    if r.get("is_icms_isento"):
+        icms_a = 0.0
+        if (icms_v or 0) > 0.01:
+            flags_div.append(
+                f"ICMS cobrado indevidamente: UC com isencao "
+                f"(Art.9, XLVIII, f RICMS-PE) — valor cobrado=R${icms_v:.2f}"
+            )
+
     if icms_b and icms_a and icms_v:
         calc_icms = round(icms_b * icms_a / 100, 2)
         dif_icms  = abs(calc_icms - icms_v)
@@ -755,11 +855,15 @@ def auditar(r):
         metricas["dif_base_icms_R$"] = None
 
     # 5c. Tarifa COM tributos — verificar calculo a partir da tarifa SEM tributos
-    # Formula nova (STF RE 574.706, >= 03/2023): tarifa_com = tarifa_sem / ((1-ICMS)*(1-PIS-COFINS))
-    # Formula antiga (< 03/2023):                tarifa_com = tarifa_sem / (1-ICMS-PIS-COFINS)
-    if icms_a and r.get("pis_aliq") and r.get("cofins_aliq"):
+    # Formula nova (STF RE 574.706): tarifa_com = tarifa_sem / ((1-ICMS)*(1-PIS-COFINS))
+    # Formula antiga:                tarifa_com = tarifa_sem / (1-ICMS-PIS-COFINS)
+    # Para isencao ICMS: icms_a=0 (mesmo resultado em ambas as formulas).
+    # Para Baixa Renda: sem preco_tusd/preco_te unico — skip.
+    _icms_a_eff = (icms_a or 0.0) if r.get("is_icms_isento") else icms_a
+    if _icms_a_eff is not None and r.get("pis_aliq") and r.get("cofins_aliq") \
+            and not r.get("is_baixa_renda"):
         nova_formula = _detectar_formula_stf(r)
-        icms2   = icms_a / 100
+        icms2   = _icms_a_eff / 100
         pis2    = r.get("pis_aliq") / 100
         cofins2 = r.get("cofins_aliq") / 100
         denom   = (1 - icms2) * (1 - (pis2 + cofins2)) if nova_formula else 1 - (icms2 + pis2 + cofins2)
@@ -819,6 +923,7 @@ def auditar(r):
         r.get("cosip") or 0,
         r.get("icms_cde") or 0,
         r.get("valor_parcelamento") or 0,
+        r.get("valor_segunda_via") or 0,
         r.get("valor_ipca") or 0,
         r.get("valor_imp_som_dim_c") or 0,
         r.get("valor_imp_som_dim_s") or 0,
@@ -869,7 +974,67 @@ def auditar(r):
         # Fallback: lookup simples por ref_mes_ano (sem datas de leitura)
         reh_bt = _reh_bt_para_periodo(r.get("ref_mes_ano"), subclasse_bt)
 
-    if reh_bt is None:
+    if r.get("is_baixa_renda"):
+        # Baixa Renda: verificacao por faixa contra REH ANEEL.
+        n_faixas_br = r.get("n_faixas_br", 0)
+        if n_faixas_br == 0:
+            flags_inv.append(
+                "Baixa Renda: faixas nao extraidas — verificar tarifa REH por faixa manualmente"
+            )
+        else:
+            faixas_esp = _br_faixas_para_periodo(
+                r.get("data_leitura_anterior"),
+                r.get("data_leitura_atual"),
+                lista_bt,
+            )
+            if faixas_esp is None:
+                flags_inv.append(
+                    f"Baixa Renda: faixas REH nao cadastradas para periodo "
+                    f"{r.get('ref_mes_ano')} — verificar manualmente"
+                )
+            else:
+                metricas["reh_br_n_faixas_esp"] = len(faixas_esp)
+                if reh_bt:
+                    metricas["reh_bt"] = reh_bt.get("reh")
+                for i in range(n_faixas_br):
+                    if i >= len(faixas_esp):
+                        flags_inv.append(
+                            f"Baixa Renda fx{i+1}: faixa billed mas nao cadastrada na REH"
+                        )
+                        continue
+                    fx = faixas_esp[i]
+                    tusd_tar = r.get(f"tusd_fx{i+1}_tarifa")
+                    te_tar   = r.get(f"te_fx{i+1}_tarifa")
+                    tusd_qtd = r.get(f"tusd_fx{i+1}_qtd")
+                    te_qtd   = r.get(f"te_fx{i+1}_qtd")
+
+                    esp_tusd = fx["TUSD_kwh"]
+                    esp_te   = fx["TE_kwh"]
+
+                    if tusd_tar is None:
+                        flags_inv.append(
+                            f"Baixa Renda TUSD fx{i+1}: tarifa sem tributos nao extraida"
+                        )
+                    elif _tol_reh(tusd_tar, esp_tusd):
+                        dif = tusd_tar - esp_tusd
+                        imp = f" | impacto R$ {tusd_qtd * dif:+.2f}" if tusd_qtd else ""
+                        flags_div.append(
+                            f"Baixa Renda TUSD fx{i+1}: fatura={tusd_tar:.8f} vs "
+                            f"REH={esp_tusd:.8f} R$/kWh (dif={dif:+.8f}{imp})"
+                        )
+
+                    if te_tar is None:
+                        flags_inv.append(
+                            f"Baixa Renda TE fx{i+1}: tarifa sem tributos nao extraida"
+                        )
+                    elif _tol_reh(te_tar, esp_te):
+                        dif = te_tar - esp_te
+                        imp = f" | impacto R$ {te_qtd * dif:+.2f}" if te_qtd else ""
+                        flags_div.append(
+                            f"Baixa Renda TE fx{i+1}: fatura={te_tar:.8f} vs "
+                            f"REH={esp_te:.8f} R$/kWh (dif={dif:+.8f}{imp})"
+                        )
+    elif reh_bt is None:
         flags_inv.append(
             f"REH BT: nenhuma REH cadastrada para periodo {r.get('ref_mes_ano')} "
             f"-- verificar manualmente"
@@ -911,6 +1076,54 @@ def auditar(r):
     # 8. Erros de extracao
     if r.get("erro"):
         flags_div.append(f"erro de extracao: {r['erro']}")
+
+    # 9. Variacao de consumo vs historico
+    historico = r.get("historico_consumo") or []
+    consumo_fat_hist = r.get("consumo_kwh_tusd_qtd")
+    if historico and consumo_fat_hist:
+        # Identificar mes atual para excluir do historico
+        ref_parts = (r.get("ref_mes_ano") or "").split("/")
+        mes_abrev_atual, ano_2d_atual = "", ""
+        if len(ref_parts) == 2:
+            try:
+                mes_abrev_atual = _MES_ABREV.get(int(ref_parts[0]), "")
+                ano_2d_atual    = ref_parts[1][-2:]
+            except (ValueError, TypeError):
+                pass
+        hist_prev = [
+            h for h in historico
+            if h.get("consumo_kwh") and not (
+                h.get("mes", "").upper() == mes_abrev_atual
+                and str(h.get("ano", ""))[-2:] == ano_2d_atual
+            )
+        ]
+        if hist_prev:
+            # Mes imediatamente anterior (primeiro da lista apos exclusao do atual)
+            h_ant    = hist_prev[0]
+            cons_ant = h_ant.get("consumo_kwh", 0)
+            mes_ant  = f"{h_ant.get('mes', '?')}/{h_ant.get('ano', '?')}"
+            if cons_ant and cons_ant > 0:
+                var_pct = (consumo_fat_hist - cons_ant) / cons_ant * 100
+                metricas["var_mensal_pct"] = round(var_pct, 1)
+                if var_pct > 30:
+                    flags_inv.append(
+                        f"consumo: {consumo_fat_hist:.0f} kWh vs {mes_ant} "
+                        f"{int(cons_ant)} kWh ({var_pct:+.1f}%) "
+                        f"— variacao mensal elevada"
+                    )
+            # Media historica (minimo 2 meses anteriores)
+            if len(hist_prev) >= 2:
+                consumos_hist  = [h["consumo_kwh"] for h in hist_prev]
+                media_hist     = sum(consumos_hist) / len(consumos_hist)
+                var_media_pct  = (consumo_fat_hist - media_hist) / media_hist * 100
+                metricas["var_media_hist_pct"] = round(var_media_pct, 1)
+                metricas["media_hist_kwh"]     = round(media_hist, 1)
+                if var_media_pct > 40:
+                    flags_inv.append(
+                        f"consumo: {consumo_fat_hist:.0f} kWh vs media historica "
+                        f"{media_hist:.0f} kWh ({var_media_pct:+.1f}%) "
+                        f"— base {len(consumos_hist)} meses"
+                    )
 
     # Triagem final
     if flags_div:
