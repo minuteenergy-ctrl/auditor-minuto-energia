@@ -68,6 +68,16 @@ def _periodo_anos(refs):
 def _periodo_geral(refs):
     return _periodo_anos(refs)
 
+def _sort_key_ref(ref):
+    """Ordena refs no formato MM/YYYY ou MMM/YYYY."""
+    try:
+        parts = str(ref).split("/")
+        if parts[0].isdigit():
+            return (int(parts[1]), int(parts[0]))
+        return (int(parts[1]), _MESES.get(parts[0].upper(), 0))
+    except Exception:
+        return (9999, 99)
+
 def _fig_to_img(fig, dpi=200):
     buf = io.BytesIO()
     fig.savefig(buf, format="png", dpi=dpi, bbox_inches="tight",
@@ -133,6 +143,51 @@ def _chart_ucbar(ucs_data):
                  color=C_NAVY, pad=8)
     fig.tight_layout()
     return _fig_to_img(fig)
+
+def _chart_consumo_uc(refs, consumos, media, tol=0.15):
+    """Bar chart de consumo mensal com banda de tolerância ±tol%."""
+    n = len(refs)
+    fig_w = max(10, n * 0.32)
+    fig, ax = plt.subplots(figsize=(fig_w, 3.6), facecolor="white")
+
+    lim_sup = media * (1 + tol)
+    lim_inf = media * (1 - tol)
+
+    bar_colors = [C_AMBER if v > lim_sup else (C_BLUE if v < lim_inf else C_GREEN)
+                  for v in consumos]
+
+    x = np.arange(n)
+    ax.bar(x, consumos, color=bar_colors, width=0.72, edgecolor="white", linewidth=0.4)
+
+    ax.axhline(media,   color=C_NAVY,  linewidth=1.6, linestyle="-",  zorder=3)
+    ax.axhline(lim_sup, color="#6aaa3a", linewidth=0.9, linestyle="--", zorder=3)
+    ax.axhline(lim_inf, color="#6aaa3a", linewidth=0.9, linestyle="--", zorder=3)
+    ax.axhspan(lim_inf, lim_sup, alpha=0.07, color=C_GREEN)
+
+    ax.set_xticks(x)
+    ax.set_xticklabels(refs, rotation=55, ha="right", fontsize=6.5)
+    ax.set_ylabel("kWh", fontsize=8.5, color=C_GRAY)
+    ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda v, _: f"{v:,.0f}"))
+    ax.spines[["top", "right"]].set_visible(False)
+    ax.spines[["left", "bottom"]].set_color("#E5EBE0")
+    ax.set_xlim(-0.6, n - 0.4)
+
+    from matplotlib.patches import Patch
+    legend_elements = [
+        Patch(color=C_GREEN, label=f"Normal (±{int(tol*100)}%)"),
+        Patch(color=C_AMBER, label="Acima do limite"),
+        Patch(color=C_BLUE,  label="Abaixo do limite"),
+    ]
+    ax.legend(handles=legend_elements, loc="upper left", fontsize=7.5,
+              frameon=False, ncol=3)
+    ax.set_title(
+        f"Média: {media:,.0f} kWh  |  Banda ±{int(tol*100)}%: "
+        f"{lim_inf:,.0f} – {lim_sup:,.0f} kWh",
+        fontsize=9.5, fontweight="bold", color=C_NAVY, pad=6,
+    )
+    fig.tight_layout()
+    return _fig_to_img(fig)
+
 
 def _draw_capa(c, cliente_nome, dist, periodo, n_ucs, data_rel, parceiro_nome=""):
     c.setFillColor(NAVY)
@@ -293,7 +348,7 @@ OBS_PRAZOS = (
     "assine o contrato e a procuração com poderes específicos."
 )
 
-def gerar_relatorio_pdf(cliente_nome, registros, parceiro_nome=""):
+def gerar_relatorio_pdf(cliente_nome, registros, parceiro_nome="", valor_recuperavel: float | None = None):
     import datetime as _dt
     ST = _get_styles()
 
@@ -386,6 +441,7 @@ def gerar_relatorio_pdf(cliente_nome, registros, parceiro_nome=""):
         "Cobranças retroativas (multas, juros, atualizações)",
         "Divergência entre total da fatura e total a pagar",
         "GD — compensação de energia injetada",
+        "Histórico de consumo — variação mensal e vs média histórica (tolerância ±15%)",
     ]
     story.append(Paragraph("Itens verificados na auditoria:", ST["bold"]))
     story.append(Spacer(1, 3 * mm))
@@ -411,11 +467,12 @@ def gerar_relatorio_pdf(cliente_nome, registros, parceiro_nome=""):
     story.append(Paragraph("Resultados Consolidados", ST["section"]))
     story.append(HRFlowable(width="100%", thickness=1.5, color=LIME, spaceAfter=8))
 
+    _val_rec = valor_recuperavel if valor_recuperavel is not None else RS_DIV
     kpis = [
-        (str(TOT_OK),    "faturas OK",          C_GREEN),
-        (str(TOT_PROB),  "faturas Divergentes",  C_BLUE),
-        (_brl(RS_PROB),  "em faturas com ocorrências", C_NAVY),
-        (_brl(RS_GERAL), "valor total auditado", C_GREEN),
+        (str(TOT_OK),         "faturas OK",                    C_GREEN),
+        (str(TOT_PROB),       "faturas com ocorrências",        C_BLUE),
+        (_brl(_val_rec),      "valor passível de recuperação",  C_NAVY),
+        (_brl(RS_GERAL),      "valor total auditado",           C_GREEN),
     ]
 
     def _kpi_cell(val, lbl, col):
@@ -506,7 +563,105 @@ def gerar_relatorio_pdf(cliente_nome, registros, parceiro_nome=""):
     story.append(uc_tbl)
     story.append(PageBreak())
 
-    # P5: Andamento Processual
+    # P5: Análise de Consumo — Variação da Média
+    TOLERANCIA = 0.15
+
+    story.append(Paragraph("Análise de Consumo — Variação da Média Histórica", ST["section"]))
+    story.append(HRFlowable(width="100%", thickness=1.5, color=LIME, spaceAfter=6))
+    story.append(Paragraph(
+        f"Tolerância adotada: <b>±{int(TOLERANCIA*100)}%</b> em relação à média histórica de cada UC. "
+        "Barras em <font color='#BA7517'><b>âmbar</b></font> indicam consumo acima do limite superior; "
+        "em <font color='#1B5179'><b>azul</b></font>, abaixo do limite inferior.",
+        ST["body"]))
+    story.append(Spacer(1, 5 * mm))
+
+    # Agrupar consumos por UC, ordenados por período
+    uc_consumo = defaultdict(list)
+    for reg in registros:
+        uc  = reg.get("conta_uc") or "—"
+        kwh = reg.get("consumo_kwh")
+        ref = reg.get("ref_mes_ano")
+        if kwh is not None and ref:
+            try:
+                uc_consumo[uc].append((ref, float(kwh)))
+            except (TypeError, ValueError):
+                pass
+
+    for uc, items in sorted(uc_consumo.items()):
+        sorted_items = sorted(items, key=lambda x: _sort_key_ref(x[0]))
+        refs     = [i[0] for i in sorted_items]
+        consumos = [i[1] for i in sorted_items]
+        if not consumos:
+            continue
+
+        media   = sum(consumos) / len(consumos)
+        lim_sup = media * (1 + TOLERANCIA)
+        lim_inf = media * (1 - TOLERANCIA)
+
+        desvios = [
+            (ref, kwh, (kwh - media) / media * 100)
+            for ref, kwh in zip(refs, consumos)
+            if kwh > lim_sup or kwh < lim_inf
+        ]
+
+        # Cabeçalho da UC
+        story.append(Paragraph(
+            f'<font color="{C_NAVY}"><b>UC {uc}</b></font>'
+            f'<font color="{C_GRAY}">  ·  Média: {media:,.0f} kWh  ·  '
+            f'Banda: {lim_inf:,.0f} – {lim_sup:,.0f} kWh  ·  '
+            f'{len(desvios)} fatura(s) fora da banda</font>',
+            ParagraphStyle("uchdr", fontName="Helvetica-Bold", fontSize=10,
+                           textColor=NAVY, spaceAfter=4),
+        ))
+
+        # Gráfico
+        chart_buf = _chart_consumo_uc(refs, consumos, media, TOLERANCIA)
+        # Escalar a largura para caber no CW da página
+        img_w = min(CW, CW)
+        img_h = img_w * (3.6 / max(10, len(refs) * 0.32))
+        img_h = min(img_h, 155)          # limitar altura máxima
+        story.append(Image(chart_buf, width=img_w, height=img_h))
+        story.append(Spacer(1, 4 * mm))
+
+        if desvios:
+            tbl_data = [["Período", "Consumo (kWh)", "Média (kWh)", "Desvio (%)", "Situação"]]
+            row_bg   = []
+            for i, (ref, kwh, dev) in enumerate(
+                sorted(desvios, key=lambda x: _sort_key_ref(x[0])), 1
+            ):
+                def _fmt(v):
+                    return f"{v:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+                situ = "Acima do limite superior" if dev > 0 else "Abaixo do limite inferior"
+                tbl_data.append([ref, _fmt(kwh), _fmt(media), f"{dev:+.1f}%", situ])
+                bg = HexColor("#FFF3CD") if dev > 0 else HexColor("#D6EAF8")
+                row_bg.append(("BACKGROUND", (0, i), (-1, i), bg))
+
+            col_w = [CW * f for f in [0.13, 0.19, 0.18, 0.14, 0.36]]
+            tbl = Table(tbl_data, colWidths=col_w, repeatRows=1)
+            tbl.setStyle(TableStyle([
+                ("BACKGROUND",    (0,  0), (-1,  0), NAVY),
+                ("TEXTCOLOR",     (0,  0), (-1,  0), WHITE),
+                ("FONTNAME",      (0,  0), (-1,  0), "Helvetica-Bold"),
+                ("FONTNAME",      (0,  1), (-1, -1), "Helvetica"),
+                ("FONTSIZE",      (0,  0), (-1, -1), 9),
+                ("ALIGN",         (1,  0), (-1, -1), "CENTER"),
+                ("ALIGN",         (0,  0), ( 0, -1), "LEFT"),
+                ("GRID",          (0,  0), (-1, -1), 0.5, LGRAY),
+                ("TOPPADDING",    (0,  0), (-1, -1), 5),
+                ("BOTTOMPADDING", (0,  0), (-1, -1), 5),
+                ("LEFTPADDING",   (0,  0), (-1, -1), 7),
+            ] + row_bg))
+            story.append(tbl)
+        else:
+            story.append(Paragraph(
+                "Todas as faturas estão dentro da tolerância de ±15% da média histórica.",
+                ST["obs"]))
+
+        story.append(Spacer(1, 6 * mm))
+
+    story.append(PageBreak())
+
+    # P7: Andamento Processual
     story.append(Paragraph("Andamento Processual — Auditoria de Faturas", ST["section"]))
     story.append(HRFlowable(width="100%", thickness=1.5, color=LIME, spaceAfter=10))
 
