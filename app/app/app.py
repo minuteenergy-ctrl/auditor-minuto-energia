@@ -254,7 +254,7 @@ def normalizar_cpfl(dados, audit_result, pdf_filename):
         "tarifa_te_sem":   auditado.get("te_sem_trib"),
         "bandeira":       dados.get("bandeira_vigente"),
         "valor_bandeira": band_val or None,
-        "cosip":          None,
+        "cosip":          dados.get("cosip"),
         "total_fatura":   total_fat,
         "icms_base":      trib.get("icms", {}).get("base"),
         "icms_aliq":      trib.get("icms", {}).get("aliquota_pct"),
@@ -469,6 +469,34 @@ st.markdown("""
     <p>Auditoria automática conforme REH ANEEL e Lei 14.300/2022</p>
 </div>
 """, unsafe_allow_html=True)
+
+
+# ── COSIP check ───────────────────────────────────────────────────────────────
+def aplicar_check_cosip(registros, tolerancia=0.10):
+    from collections import defaultdict
+    uc_cosips = defaultdict(list)
+    for reg in registros:
+        uc = reg.get("conta_uc")
+        cosip = reg.get("cosip")
+        if uc and cosip and cosip > 0:
+            uc_cosips[uc].append(cosip)
+    for reg in registros:
+        uc = reg.get("conta_uc")
+        cosip = reg.get("cosip")
+        if not uc or not cosip or cosip <= 0:
+            continue
+        valores = uc_cosips.get(uc, [])
+        if len(valores) < 2:
+            continue
+        media = sum(valores) / len(valores)
+        limite = round(media * (1 + tolerancia), 2)
+        if cosip > limite:
+            if reg.get("__triagem__") != "DIVERGENCIA":
+                reg["__triagem__"] = "INVESTIGAR"
+            motivo = f"COSIP R${cosip:.2f} > +10% da media historica UC (media R${media:.2f}, limite R${limite:.2f})"
+            atual = reg.get("__motivos__", "")
+            reg["__motivos__"] = (atual + " | " + motivo).lstrip(" | ") if atual else motivo
+    return registros
 
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
@@ -711,6 +739,7 @@ with tab1:
             status.markdown("📊 Consolidando resultados...")
             master_path = run_dir / f"MASTER_Auditoria_{run_id}.xlsx"
             registros_norm = [r["__registro__"] for r in resultados]
+            registros_norm = aplicar_check_cosip(registros_norm)
             gerar_excel_mestre(registros_norm, master_path)
 
             status.markdown(f"✅ **Auditoria conferida!** {len(resultados)} fatura(s) processada(s).")
