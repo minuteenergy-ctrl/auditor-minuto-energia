@@ -303,13 +303,15 @@ def auditar_fatura(dados, config):
     # ----------------------------------------------------------------
     total_fatura = dados.get("total_fatura") or dados.get("total_a_pagar") or 0
     total_a_pagar = dados.get("total_a_pagar") or 0
-    diff_total = abs(total_fatura - total_a_pagar)
+    cosip_val = dados.get("cosip") or 0
+    # CIP/COSIP é cobrada separada da energia e já está no total_a_pagar
+    diff_total = abs(total_fatura + cosip_val - total_a_pagar)
     if total_fatura and total_a_pagar:
         alertas.append({
             "cat": "Total a Pagar",
-            "descricao": f"Total fatura R${total_fatura:.2f} vs total a pagar R${total_a_pagar:.2f}",
+            "descricao": f"Total fatura R${total_fatura:.2f} + CIP R${cosip_val:.2f} vs total a pagar R${total_a_pagar:.2f}",
             "status": "OK" if diff_total <= tol_rs else "INVESTIGAR",
-            "diferenca": round(total_fatura - total_a_pagar, 2),
+            "diferenca": round(total_fatura + cosip_val - total_a_pagar, 2),
         })
 
     # ----------------------------------------------------------------
