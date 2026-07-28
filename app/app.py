@@ -691,7 +691,14 @@ config_default = {
 
 
 # ── Tabs ──────────────────────────────────────────────────────────────────────
-tab1, tab2, tab3, tab4, tab5 = st.tabs(["📤 Processar faturas", "📊 Resultados", "📋 Relatório Final", "📈 Histórico", "ℹ️ Sobre"])
+tab1, tab2, tab_dash, tab3, tab4, tab5 = st.tabs([
+    "📤 Processar faturas",
+    "📊 Resultados",
+    "📈 Dashboard",
+    "📋 Relatório Final",
+    "🕐 Histórico",
+    "ℹ️ Sobre",
+])
 
 
 # ── Tab 1: Upload ─────────────────────────────────────────────────────────────
@@ -920,6 +927,311 @@ with tab2:
                         st.markdown(f"{icon} {m}")
                 else:
                     st.markdown("✅ Fatura conferida — sem divergências")
+
+
+# ── Tab Dashboard ─────────────────────────────────────────────────────────────
+with tab_dash:
+    try:
+        import plotly.graph_objects as _go
+        import plotly.express as _px
+        _PLOTLY_DASH = True
+    except ImportError:
+        _PLOTLY_DASH = False
+
+    _MESES_DASH = {
+        "JAN": 1, "FEV": 2, "MAR": 3, "ABR": 4,
+        "MAI": 5, "JUN": 6, "JUL": 7, "AGO": 8,
+        "SET": 9, "OUT": 10, "NOV": 11, "DEZ": 12,
+    }
+
+    def _parse_ref_dash(ref):
+        try:
+            parts = str(ref).strip().split("/")
+            y = int(parts[1])
+            m_raw = parts[0]
+            m = int(m_raw) if m_raw.isdigit() else _MESES_DASH.get(m_raw.upper(), 1)
+            return pd.Timestamp(year=y, month=m, day=1)
+        except Exception:
+            return pd.NaT
+
+    def _brl_d(v):
+        return f"R$ {v:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+
+    def _col(df, name):
+        """Retorna coluna como Series numérica ou zeros."""
+        if name in df.columns:
+            return pd.to_numeric(df[name], errors="coerce").fillna(0)
+        return pd.Series([0] * len(df), index=df.index)
+
+    _regs_dash = st.session_state.get("registros_acumulados", [])
+
+    if not _regs_dash:
+        st.markdown("""
+        <div style="text-align:center; padding: 60px 0; color: #5A6B7C;">
+            <div style="font-size:48px; margin-bottom:16px;">📈</div>
+            <div style="font-family:'Poppins',sans-serif; font-size:16px; font-weight:500; color:#0A2540;">
+                Nenhuma fatura acumulada ainda
+            </div>
+            <div style="font-size:13px; margin-top:8px;">
+                Processe faturas na aba <strong>Processar faturas</strong> para ver o dashboard.
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+    else:
+        _df = pd.DataFrame(_regs_dash).copy()
+        _df["_data"]        = _df["ref_mes_ano"].apply(_parse_ref_dash)
+        _df["total_fatura"] = pd.to_numeric(_df["total_fatura"],  errors="coerce").fillna(0)
+        _df["__dif_total__"]= pd.to_numeric(_df["__dif_total__"], errors="coerce").fillna(0)
+        _df["consumo_kwh"]  = pd.to_numeric(_df["consumo_kwh"],   errors="coerce").fillna(0)
+        _df = _df.sort_values("_data")
+        _df["_label"] = _df["_data"].dt.strftime("%m/%Y")
+
+        # ── VISÃO GERAL ───────────────────────────────────────────────────────
+        st.markdown("### Visão Geral")
+        st.markdown("---")
+
+        _total_gasto = _df["total_fatura"].sum()
+        _val_rec     = _df["__dif_total__"].sum()
+        _n_ucs       = _df["conta_uc"].nunique()
+        _n_fat       = len(_df)
+        _n_prob      = _df["__triagem__"].isin(["INVESTIGAR", "DIVERGENCIA"]).sum()
+
+        _g1, _g2, _g3, _g4 = st.columns(4)
+        _g1.markdown(f'<div class="me-metric"><div class="val">{_brl_d(_total_gasto)}</div><div class="lbl">Total gasto no período</div></div>', unsafe_allow_html=True)
+        _g2.markdown(f'<div class="me-metric div"><div class="val">{_brl_d(_val_rec)}</div><div class="lbl">Valor passível de recuperação</div></div>', unsafe_allow_html=True)
+        _g3.markdown(f'<div class="me-metric ok"><div class="val">{_n_ucs}</div><div class="lbl">Unidades consumidoras</div></div>', unsafe_allow_html=True)
+        _g4.markdown(f'<div class="me-metric {"div" if _n_prob else "ok"}"><div class="val">{_n_prob} / {_n_fat}</div><div class="lbl">Faturas com ocorrência</div></div>', unsafe_allow_html=True)
+
+        st.markdown("")
+
+        if _PLOTLY_DASH:
+            # Linha 1: gasto mensal + donut
+            _ga, _gb = st.columns([3, 1])
+
+            with _ga:
+                _mensal = (
+                    _df.dropna(subset=["_data"])
+                    .groupby("_label")["total_fatura"].sum()
+                    .reset_index()
+                )
+                # manter ordem cronológica
+                _order = (
+                    _df.dropna(subset=["_data"])
+                    .drop_duplicates("_label")
+                    .sort_values("_data")[["_label"]]
+                )
+                _mensal = _order.merge(_mensal, on="_label", how="left")
+
+                _fig_men = _go.Figure(_go.Bar(
+                    x=_mensal["_label"], y=_mensal["total_fatura"],
+                    marker_color="#1B5179",
+                    hovertemplate="%{x}<br><b>R$ %{y:,.2f}</b><extra></extra>",
+                ))
+                _fig_men.update_layout(
+                    title="Gasto Total Mensal — todas as UCs",
+                    xaxis_title=None, yaxis_title="R$",
+                    plot_bgcolor="#FAFBF8", paper_bgcolor="#FAFBF8",
+                    height=310, margin=dict(t=45, r=15, l=60, b=35),
+                    showlegend=False,
+                )
+                st.plotly_chart(_fig_men, use_container_width=True)
+
+            with _gb:
+                _t_cnt  = _df["__triagem__"].value_counts()
+                _t_clr  = {"OK": "#5A9F37", "INVESTIGAR": "#1B5179", "DIVERGENCIA": "#BA7517"}
+                _fig_do = _go.Figure(_go.Pie(
+                    labels=list(_t_cnt.index), values=list(_t_cnt.values),
+                    hole=0.55,
+                    marker=dict(colors=[_t_clr.get(l, "#9AA8B7") for l in _t_cnt.index]),
+                    textinfo="percent+label",
+                    hovertemplate="%{label}: %{value} faturas<extra></extra>",
+                ))
+                _fig_do.update_layout(
+                    title="Triagem",
+                    height=310, margin=dict(t=45, r=5, l=5, b=5),
+                    paper_bgcolor="#FAFBF8", showlegend=False,
+                )
+                st.plotly_chart(_fig_do, use_container_width=True)
+
+            # Linha 2: ranking por UC
+            _uc_rank = (
+                _df.groupby("conta_uc")
+                .agg(total=("total_fatura", "sum"), recuperavel=("__dif_total__", "sum"))
+                .reset_index()
+                .sort_values("total", ascending=True)
+            )
+            _fig_uc = _go.Figure()
+            _fig_uc.add_trace(_go.Bar(
+                y=_uc_rank["conta_uc"], x=_uc_rank["total"],
+                orientation="h", name="Total gasto", marker_color="#1B5179",
+                hovertemplate="UC %{y}<br>Total: R$ %{x:,.2f}<extra></extra>",
+            ))
+            _fig_uc.add_trace(_go.Bar(
+                y=_uc_rank["conta_uc"], x=_uc_rank["recuperavel"],
+                orientation="h", name="Recuperável", marker_color="#BA7517",
+                hovertemplate="UC %{y}<br>Recuperável: R$ %{x:,.2f}<extra></extra>",
+            ))
+            _fig_uc.update_layout(
+                title="Gasto Total e Valor Recuperável por UC",
+                barmode="overlay", xaxis_title="R$", yaxis_title=None,
+                plot_bgcolor="#FAFBF8", paper_bgcolor="#FAFBF8",
+                height=max(200, len(_uc_rank) * 50 + 80),
+                margin=dict(t=45, r=15, l=90, b=35),
+                legend=dict(orientation="h", y=1.12, x=0),
+            )
+            st.plotly_chart(_fig_uc, use_container_width=True)
+
+        # ── POR UC ────────────────────────────────────────────────────────────
+        st.markdown("---")
+        st.markdown("### Por Unidade Consumidora")
+
+        _ucs_d = sorted(_df["conta_uc"].dropna().astype(str).unique())
+        _uc_sel_d = st.selectbox("Selecionar UC", _ucs_d, key="dash_uc")
+        _dfu = _df[_df["conta_uc"].astype(str) == _uc_sel_d].copy()
+
+        # KPIs UC
+        _uc_tot  = _dfu["total_fatura"].sum()
+        _uc_rec  = _dfu["__dif_total__"].sum()
+        _uc_kwh  = _dfu["consumo_kwh"].mean()
+        _uc_np   = _dfu["__triagem__"].isin(["INVESTIGAR", "DIVERGENCIA"]).sum()
+        _uc_nf   = len(_dfu)
+
+        _u1, _u2, _u3, _u4 = st.columns(4)
+        _u1.markdown(f'<div class="me-metric"><div class="val">{_brl_d(_uc_tot)}</div><div class="lbl">Total gasto</div></div>', unsafe_allow_html=True)
+        _u2.markdown(f'<div class="me-metric div"><div class="val">{_brl_d(_uc_rec)}</div><div class="lbl">Valor recuperável</div></div>', unsafe_allow_html=True)
+        _u3.markdown(f'<div class="me-metric ok"><div class="val">{_uc_kwh:,.0f} kWh</div><div class="lbl">Consumo médio mensal</div></div>', unsafe_allow_html=True)
+        _u4.markdown(f'<div class="me-metric {"div" if _uc_np else "ok"}"><div class="val">{_uc_np}/{_uc_nf}</div><div class="lbl">Faturas com ocorrência</div></div>', unsafe_allow_html=True)
+
+        st.markdown("")
+
+        if _PLOTLY_DASH:
+            # Gasto mensal da UC (barras coloridas por triagem)
+            _triagem_colors = [
+                "#BA7517" if t in ("INVESTIGAR", "DIVERGENCIA") else "#1B5179"
+                for t in _dfu["__triagem__"]
+            ]
+            _fig_fat = _go.Figure(_go.Bar(
+                x=_dfu["_label"], y=_dfu["total_fatura"],
+                marker_color=_triagem_colors,
+                hovertemplate="%{x}<br><b>R$ %{y:,.2f}</b><extra></extra>",
+            ))
+            _fig_fat.update_layout(
+                title=f"Evolução do Gasto Mensal — UC {_uc_sel_d}",
+                xaxis_title=None, yaxis_title="R$",
+                plot_bgcolor="#FAFBF8", paper_bgcolor="#FAFBF8",
+                height=290, margin=dict(t=45, r=15, l=60, b=35),
+                showlegend=False,
+            )
+            st.plotly_chart(_fig_fat, use_container_width=True)
+
+            _col_e, _col_f = st.columns(2)
+
+            with _col_e:
+                # Consumo kWh — ponta vs FP se disponível, senão total
+                _kp  = _col(_dfu, "consumo_ponta_kwh")
+                _kfp = _col(_dfu, "consumo_fp_kwh")
+                if _kp.sum() + _kfp.sum() > 0:
+                    _fig_kwh = _go.Figure()
+                    _fig_kwh.add_trace(_go.Bar(
+                        x=_dfu["_label"], y=_kp, name="Ponta", marker_color="#BA7517",
+                        hovertemplate="%{x}<br>Ponta: %{y:,.0f} kWh<extra></extra>",
+                    ))
+                    _fig_kwh.add_trace(_go.Bar(
+                        x=_dfu["_label"], y=_kfp, name="Fora Ponta", marker_color="#1B5179",
+                        hovertemplate="%{x}<br>F.Ponta: %{y:,.0f} kWh<extra></extra>",
+                    ))
+                    _fig_kwh.update_layout(
+                        title="Consumo kWh — Ponta vs Fora Ponta",
+                        barmode="stack", xaxis_title=None, yaxis_title="kWh",
+                        plot_bgcolor="#FAFBF8", paper_bgcolor="#FAFBF8",
+                        height=270, margin=dict(t=45, r=10, l=50, b=35),
+                        legend=dict(orientation="h", y=1.12, x=0),
+                    )
+                else:
+                    _fig_kwh = _go.Figure(_go.Bar(
+                        x=_dfu["_label"], y=_dfu["consumo_kwh"],
+                        marker_color="#1B5179",
+                        hovertemplate="%{x}<br>%{y:,.0f} kWh<extra></extra>",
+                    ))
+                    _fig_kwh.update_layout(
+                        title="Consumo kWh", xaxis_title=None, yaxis_title="kWh",
+                        plot_bgcolor="#FAFBF8", paper_bgcolor="#FAFBF8",
+                        height=270, margin=dict(t=45, r=10, l=50, b=35),
+                        showlegend=False,
+                    )
+                st.plotly_chart(_fig_kwh, use_container_width=True)
+
+            with _col_f:
+                # Demanda medida vs contratada (MT) ou tributos (BT)
+                _dem_med  = _col(_dfu, "demanda_medida_kw")
+                _dem_cont = _col(_dfu, "demanda_contratada_kw")
+                if _dem_med.sum() > 0:
+                    _fig_dem = _go.Figure()
+                    _fig_dem.add_trace(_go.Bar(
+                        x=_dfu["_label"], y=_dem_med,
+                        name="Medida", marker_color="#1B5179",
+                        hovertemplate="%{x}<br>Medida: %{y:,.1f} kW<extra></extra>",
+                    ))
+                    if _dem_cont.sum() > 0:
+                        _fig_dem.add_trace(_go.Scatter(
+                            x=_dfu["_label"], y=_dem_cont,
+                            mode="lines+markers", name="Contratada",
+                            line=dict(color="#5A9F37", width=2, dash="dash"),
+                            hovertemplate="%{x}<br>Contratada: %{y:,.1f} kW<extra></extra>",
+                        ))
+                    _fig_dem.update_layout(
+                        title="Demanda kW — Medida vs Contratada",
+                        xaxis_title=None, yaxis_title="kW",
+                        plot_bgcolor="#FAFBF8", paper_bgcolor="#FAFBF8",
+                        height=270, margin=dict(t=45, r=10, l=50, b=35),
+                        legend=dict(orientation="h", y=1.12, x=0),
+                    )
+                    st.plotly_chart(_fig_dem, use_container_width=True)
+                else:
+                    # Tributos por mês (BT)
+                    _icms = _col(_dfu, "icms_valor")
+                    _pis  = _col(_dfu, "pis_valor")
+                    _cof  = _col(_dfu, "cofins_valor")
+                    _fig_trib = _go.Figure()
+                    _fig_trib.add_trace(_go.Bar(x=_dfu["_label"], y=_icms, name="ICMS",   marker_color="#0A2540"))
+                    _fig_trib.add_trace(_go.Bar(x=_dfu["_label"], y=_pis,  name="PIS",    marker_color="#1B5179"))
+                    _fig_trib.add_trace(_go.Bar(x=_dfu["_label"], y=_cof,  name="COFINS", marker_color="#5A9F37"))
+                    _fig_trib.update_layout(
+                        title="Tributos por Mês",
+                        barmode="stack", xaxis_title=None, yaxis_title="R$",
+                        plot_bgcolor="#FAFBF8", paper_bgcolor="#FAFBF8",
+                        height=270, margin=dict(t=45, r=10, l=50, b=35),
+                        legend=dict(orientation="h", y=1.12, x=0),
+                    )
+                    st.plotly_chart(_fig_trib, use_container_width=True)
+
+            # Custos acessórios (reativo + USDG ultrap)
+            _rea_p  = _col(_dfu, "valor_reativo_exc_ponta")
+            _rea_fp = _col(_dfu, "valor_reativo_exc_fp")
+            _usdg_u = _col(_dfu, "valor_usdg_ultrap")
+            _total_aces = _rea_p.sum() + _rea_fp.sum() + _usdg_u.sum()
+            if _total_aces > 0:
+                _fig_aces = _go.Figure()
+                if (_rea_p + _rea_fp).sum() > 0:
+                    _fig_aces.add_trace(_go.Bar(
+                        x=_dfu["_label"], y=(_rea_p + _rea_fp).values,
+                        name="Reativo Exc.", marker_color="#BA7517",
+                        hovertemplate="%{x}<br>Reativo: R$ %{y:,.2f}<extra></extra>",
+                    ))
+                if _usdg_u.sum() > 0:
+                    _fig_aces.add_trace(_go.Bar(
+                        x=_dfu["_label"], y=_usdg_u.values,
+                        name="USDG Ultrap.", marker_color="#0A2540",
+                        hovertemplate="%{x}<br>USDG Ultrap: R$ %{y:,.2f}<extra></extra>",
+                    ))
+                _fig_aces.update_layout(
+                    title="Custos Acessórios — Reativo Excedente + USDG Ultrapassagem",
+                    barmode="stack", xaxis_title=None, yaxis_title="R$",
+                    plot_bgcolor="#FAFBF8", paper_bgcolor="#FAFBF8",
+                    height=270, margin=dict(t=45, r=10, l=60, b=35),
+                    legend=dict(orientation="h", y=1.12, x=0),
+                )
+                st.plotly_chart(_fig_aces, use_container_width=True)
 
 
 # ── Tab 3: Relatório Final ────────────────────────────────────────────────────
