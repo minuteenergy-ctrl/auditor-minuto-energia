@@ -735,6 +735,99 @@ def gerar_relatorio_pdf(cliente_nome, registros, parceiro_nome="", valor_recuper
             ST["obs"]))
         story.append(PageBreak())
 
+    # P6c: USDG — Ultrapassagem de Demanda de Geração
+    regs_usdg_ultrap = [
+        r for r in registros
+        if (r.get("valor_usdg_ultrap") or 0) > 0
+    ]
+    if regs_usdg_ultrap:
+        story.append(Paragraph("Ultrapassagem de Demanda de Geração (USDG)", ST["section"]))
+        story.append(HRFlowable(width="100%", thickness=1.5, color=LIME, spaceAfter=8))
+
+        # Período de ocorrência
+        refs_ultrap = sorted(
+            [r.get("ref_mes_ano") for r in regs_usdg_ultrap if r.get("ref_mes_ano")],
+            key=_sort_key_ref,
+        )
+        periodo_ultrap = (
+            refs_ultrap[0] if len(refs_ultrap) == 1
+            else f"{refs_ultrap[0]} a {refs_ultrap[-1]}"
+        )
+
+        story.append(Paragraph(
+            f"Foram identificadas <b>{len(regs_usdg_ultrap)} fatura(s)</b> com cobrança de "
+            f"ultrapassagem de demanda de geração (USDG Ultrap) no período "
+            f"<b>{periodo_ultrap}</b>. A ultrapassagem ocorre quando a potência injetada "
+            "pela geração distribuída supera a demanda contratada de geração, implicando "
+            "cobrança adicional pela distribuidora.",
+            ST["body"]))
+        story.append(Spacer(1, 5 * mm))
+
+        HDR_USDG = [
+            "Ref",
+            "USDG medida (kW)",
+            "Ultrap (kW)",
+            "Tarifa s/ ICMS\n(R$/kW)",
+            "Tarifa c/ ICMS\n(R$/kW)",
+            "Valor cobrado (R$)",
+        ]
+        tbl_usdg_data = [HDR_USDG]
+        total_usdg_ultrap = 0.0
+
+        for reg in sorted(regs_usdg_ultrap, key=lambda x: _sort_key_ref(x.get("ref_mes_ano") or "")):
+            ref      = reg.get("ref_mes_ano", "")
+            usdg_kw  = reg.get("usdg_kw") or 0
+            ultrap_kw = reg.get("usdg_ultrap_kw") or 0
+            tar_sem  = reg.get("usdg_ultrap_sem")
+            tar_com  = reg.get("usdg_ultrap_com")
+            valor    = reg.get("valor_usdg_ultrap") or 0
+            total_usdg_ultrap += valor
+
+            tbl_usdg_data.append([
+                ref,
+                f"{usdg_kw:,.4f}" if usdg_kw else "—",
+                f"{ultrap_kw:,.4f}" if ultrap_kw else "—",
+                f"R$ {tar_sem:,.6f}" if tar_sem is not None else "—",
+                f"R$ {tar_com:,.6f}" if tar_com is not None else "—",
+                f"R$ {valor:,.2f}",
+            ])
+
+        # Linha de total
+        tbl_usdg_data.append([
+            f"TOTAL ({len(regs_usdg_ultrap)} fatura(s))",
+            "", "", "", "",
+            f"R$ {total_usdg_ultrap:,.2f}",
+        ])
+
+        n_usdg = len(tbl_usdg_data)
+        usdg_styles = [
+            ("BACKGROUND",    (0, 0), (-1, 0),            HexColor(C_NAVY)),
+            ("TEXTCOLOR",     (0, 0), (-1, 0),            WHITE),
+            ("FONTNAME",      (0, 0), (-1, 0),            "Helvetica-Bold"),
+            ("FONTSIZE",      (0, 0), (-1, -1),            8),
+            ("ALIGN",         (1, 0), (-1, -1),           "RIGHT"),
+            ("ALIGN",         (0, 0), (0, -1),            "CENTER"),
+            ("BACKGROUND",    (0, n_usdg - 1), (-1, n_usdg - 1), HexColor(C_BLUE)),
+            ("TEXTCOLOR",     (0, n_usdg - 1), (-1, n_usdg - 1), WHITE),
+            ("FONTNAME",      (0, n_usdg - 1), (-1, n_usdg - 1), "Helvetica-Bold"),
+            ("GRID",          (0, 0), (-1, -1),            0.5, LGRAY),
+            ("ROWBACKGROUNDS",(0, 1), (-1, n_usdg - 2),  [OFFWHITE, WHITE]),
+            ("TOPPADDING",    (0, 0), (-1, -1),            5),
+            ("BOTTOMPADDING", (0, 0), (-1, -1),            5),
+            ("LEFTPADDING",   (0, 0), (-1, -1),            5),
+            ("SPAN",          (0, n_usdg - 1), (4, n_usdg - 1)),
+        ]
+        col_w_usdg = [CW * f for f in [0.11, 0.17, 0.14, 0.19, 0.19, 0.20]]
+        usdg_tbl = Table(tbl_usdg_data, colWidths=col_w_usdg,
+                         style=TableStyle(usdg_styles))
+        story.append(usdg_tbl)
+        story.append(Spacer(1, 4 * mm))
+        story.append(Paragraph(
+            f"Total cobrado em ultrapassagem de demanda de geração no período "
+            f"<b>{periodo_ultrap}</b>: <b>R$ {total_usdg_ultrap:,.2f}</b>",
+            ST["obs"]))
+        story.append(PageBreak())
+
     # P7: Andamento Processual
     story.append(Paragraph("Andamento Processual — Auditoria de Faturas", ST["section"]))
     story.append(HRFlowable(width="100%", thickness=1.5, color=LIME, spaceAfter=10))

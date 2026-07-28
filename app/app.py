@@ -182,6 +182,13 @@ def normalizar_cpfl_paulista(rec, triagem, motivos, metricas):
         "consumo_reativo_exc_fp_kwh":    rec.get("consumo_reativo_exc_fp_kwh"),
         "valor_reativo_exc_ponta":       rec.get("valor_reativo_exc_ponta"),
         "valor_reativo_exc_fp":          rec.get("valor_reativo_exc_fp"),
+        # ── USDG — Demanda de Geração ──────────────────────────────────────────
+        "usdg_kw":            rec.get("usdg_kw"),
+        "valor_usdg":         rec.get("valor_usdg"),
+        "usdg_ultrap_kw":     rec.get("usdg_ultrap_kw"),
+        "usdg_ultrap_sem":    rec.get("usdg_ultrap_sem"),
+        "usdg_ultrap_com":    rec.get("usdg_ultrap_com"),
+        "valor_usdg_ultrap":  rec.get("valor_usdg_ultrap"),
     }
 
 
