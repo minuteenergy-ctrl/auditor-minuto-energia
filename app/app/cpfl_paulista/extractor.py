@@ -182,6 +182,46 @@ def parse_fatura(pdf_path):
     if m:
         r["valor_inj_ponta_te"] = _num(m.group(4).replace('-', '').strip())
 
+    # ── Consumo Reativo Exc Ponta ─────────────────────────────────────────────
+    m = re.search(
+        r'Consumo Reativo Exc Ponta.*?kWh\s+([\d\.,]+)\s+[\d\.,]+\s+[\d\.,]+\s+([\d\.,]+)',
+        text
+    )
+    if m:
+        r["consumo_reativo_exc_ponta_kwh"] = _num(m.group(1))
+        r["valor_reativo_exc_ponta"]       = _num(m.group(2))
+
+    # ── Consumo Reativo Exc Fora Ponta ────────────────────────────────────────
+    m = re.search(
+        r'Consumo Reativo Exc Fora Ponta.*?kWh\s+([\d\.,]+)\s+[\d\.,]+\s+[\d\.,]+\s+([\d\.,]+)',
+        text
+    )
+    if m:
+        r["consumo_reativo_exc_fp_kwh"] = _num(m.group(1))
+        r["valor_reativo_exc_fp"]       = _num(m.group(2))
+
+    # ── USDG — Uso do Sistema de Distribuição pela Geração ───────────────────
+    m = re.search(
+        r'Uso Sist Distr Gera[çc][aã]o \[kW\].*?kW\s+([\d\.,]+)\s+([\d\.,]+)\s+([\d\.,]+)\s+([\d\.,]+)',
+        text
+    )
+    if m:
+        r["usdg_kw"]    = _num(m.group(1))
+        r["usdg_sem"]   = _num(m.group(2))
+        r["usdg_com"]   = _num(m.group(3))
+        r["valor_usdg"] = _num(m.group(4))
+
+    # ── USDG Ultrapassagem ────────────────────────────────────────────────────
+    m = re.search(
+        r'Uso Sist Distr Ultrap Ger \[kW\].*?kW\s+([\d\.,]+)\s+([\d\.,]+)\s+([\d\.,]+)\s+([\d\.,]+)',
+        text
+    )
+    if m:
+        r["usdg_ultrap_kw"]    = _num(m.group(1))
+        r["usdg_ultrap_sem"]   = _num(m.group(2))
+        r["usdg_ultrap_com"]   = _num(m.group(3))
+        r["valor_usdg_ultrap"] = _num(m.group(4))
+
     # ── Bandeira tarifária ────────────────────────────────────────────────────
     m = re.search(r'Adicional Band (\w+) (?:Ponta|FPonta).*?kWh\s+([\d\.,]+)', text)
     if m:
