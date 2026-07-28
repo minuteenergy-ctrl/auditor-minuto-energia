@@ -19,11 +19,13 @@ from excel_filler import preencher_template
 from excel_mestre_core import gerar_excel_mestre
 
 # Relatório PDF
+_RELATORIO_PDF_ERRO = None
 try:
     from relatorio_pdf import gerar_relatorio_pdf
     RELATORIO_PDF_DISPONIVEL = True
-except ImportError:
+except Exception as _e:
     RELATORIO_PDF_DISPONIVEL = False
+    _RELATORIO_PDF_ERRO = str(_e)
 
 # Neoenergia PE — importação condicional
 try:
@@ -138,7 +140,7 @@ def normalizar_cpfl_paulista(rec, triagem, motivos, metricas):
         "__dif_band__":      None,
         "__dif_leit__":      None,
         "__dif_icms__":      None,
-        "__dif_total__":     metricas.get("dif_total_R$"),
+        "__dif_total__":     (metricas.get("dif_total_R$") or 0) + (metricas.get("dif_scee_R$") or 0),
         "__dif_total_pct__": None,
         # ── Campos MT — leituras por posto ────────────────────────────────────
         "consumo_ponta_kwh":    rec.get("consumo_ponta_kwh"),
@@ -177,6 +179,18 @@ def normalizar_cpfl_paulista(rec, triagem, motivos, metricas):
         "med_kvarh_fp_latu":    rec.get("med_kvarh_fp_latu"),
         "med_kvarh_fp_mult":    rec.get("med_kvarh_fp_mult"),
         "med_kvarh_fp_cons":    rec.get("med_kvarh_fp_cons"),
+        # ── Reativo excedente ──────────────────────────────────────────────────
+        "consumo_reativo_exc_ponta_kwh": rec.get("consumo_reativo_exc_ponta_kwh"),
+        "consumo_reativo_exc_fp_kwh":    rec.get("consumo_reativo_exc_fp_kwh"),
+        "valor_reativo_exc_ponta":       rec.get("valor_reativo_exc_ponta"),
+        "valor_reativo_exc_fp":          rec.get("valor_reativo_exc_fp"),
+        # ── USDG — Demanda de Geração ──────────────────────────────────────────
+        "usdg_kw":            rec.get("usdg_kw"),
+        "valor_usdg":         rec.get("valor_usdg"),
+        "usdg_ultrap_kw":     rec.get("usdg_ultrap_kw"),
+        "usdg_ultrap_sem":    rec.get("usdg_ultrap_sem"),
+        "usdg_ultrap_com":    rec.get("usdg_ultrap_com"),
+        "valor_usdg_ultrap":  rec.get("valor_usdg_ultrap"),
     }
 
 
@@ -679,7 +693,14 @@ config_default = {
 
 
 # ── Tabs ──────────────────────────────────────────────────────────────────────
-tab1, tab2, tab3, tab4, tab5 = st.tabs(["📤 Processar faturas", "📊 Resultados", "📋 Relatório Final", "📈 Histórico", "ℹ️ Sobre"])
+tab1, tab2, tab_dash, tab3, tab4, tab5 = st.tabs([
+    "📤 Processar faturas",
+    "📊 Resultados",
+    "📈 Dashboard",
+    "📋 Relatório Final",
+    "🕐 Histórico",
+    "ℹ️ Sobre",
+])
 
 
 # ── Tab 1: Upload ─────────────────────────────────────────────────────────────
@@ -737,10 +758,24 @@ with tab1:
                 progress.progress((i + 1) / len(uploaded))
 
             status.markdown("📊 Consolidando resultados...")
-            master_path = run_dir / f"MASTER_Auditoria_{run_id}.xlsx"
             registros_norm = [r["__registro__"] for r in resultados]
             registros_norm = aplicar_check_cosip(registros_norm)
-            gerar_excel_mestre(registros_norm, master_path)
+
+            def _is_mt(r):
+                sub = str(r.get("subgrupo", "")).upper()
+                return sub.startswith("A") or r.get("layout") == "Verde-A4"
+
+            regs_mt = [r for r in registros_norm if _is_mt(r)]
+            regs_bt = [r for r in registros_norm if not _is_mt(r)]
+            master_paths = []
+            if regs_mt:
+                mt_path = run_dir / f"MASTER_MT_Auditoria_{run_id}.xlsx"
+                gerar_excel_mestre(regs_mt, mt_path, modelo="MT")
+                master_paths.append(str(mt_path))
+            if regs_bt:
+                bt_path = run_dir / f"MASTER_BT_Auditoria_{run_id}.xlsx"
+                gerar_excel_mestre(regs_bt, bt_path, modelo="BT")
+                master_paths.append(str(bt_path))
 
             status.markdown(f"✅ **Auditoria conferida!** {len(resultados)} fatura(s) processada(s).")
 
@@ -756,7 +791,7 @@ with tab1:
                 "run_dir": str(run_dir),
                 "resultados": resultados,
                 "erros": erros,
-                "master_path": str(master_path),
+                "master_paths": master_paths,
             }
 
             if erros:
@@ -844,21 +879,25 @@ with tab2:
 
         # Downloads
         st.markdown("#### Baixar relatórios")
-        col1, col2 = st.columns(2)
+        master_paths = run.get("master_paths", [])
+        excel_cols = st.columns(max(len(master_paths), 1) + 1)
 
-        with col1:
-            with open(run["master_path"], "rb") as f:
-                st.download_button(
-                    "📊 Baixar Excel-mestre",
-                    f.read(),
-                    file_name=f"Auditoria_Minuto_Energia_{run['run_id']}.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                )
+        for i, mp in enumerate(master_paths):
+            tipo = "MT" if "MASTER_MT" in mp else "BT"
+            with excel_cols[i]:
+                with open(mp, "rb") as f:
+                    st.download_button(
+                        f"📊 Excel {tipo}",
+                        f.read(),
+                        file_name=Path(mp).name,
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    )
 
-        with col2:
+        with excel_cols[-1]:
             buf = io.BytesIO()
             with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-                zf.write(run["master_path"], Path(run["master_path"]).name)
+                for mp in master_paths:
+                    zf.write(mp, Path(mp).name)
                 for r in resultados:
                     p = r["excel_individual_path"]
                     if p:
@@ -890,6 +929,311 @@ with tab2:
                         st.markdown(f"{icon} {m}")
                 else:
                     st.markdown("✅ Fatura conferida — sem divergências")
+
+
+# ── Tab Dashboard ─────────────────────────────────────────────────────────────
+with tab_dash:
+    try:
+        import plotly.graph_objects as _go
+        import plotly.express as _px
+        _PLOTLY_DASH = True
+    except ImportError:
+        _PLOTLY_DASH = False
+
+    _MESES_DASH = {
+        "JAN": 1, "FEV": 2, "MAR": 3, "ABR": 4,
+        "MAI": 5, "JUN": 6, "JUL": 7, "AGO": 8,
+        "SET": 9, "OUT": 10, "NOV": 11, "DEZ": 12,
+    }
+
+    def _parse_ref_dash(ref):
+        try:
+            parts = str(ref).strip().split("/")
+            y = int(parts[1])
+            m_raw = parts[0]
+            m = int(m_raw) if m_raw.isdigit() else _MESES_DASH.get(m_raw.upper(), 1)
+            return pd.Timestamp(year=y, month=m, day=1)
+        except Exception:
+            return pd.NaT
+
+    def _brl_d(v):
+        return f"R$ {v:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+
+    def _col(df, name):
+        """Retorna coluna como Series numérica ou zeros."""
+        if name in df.columns:
+            return pd.to_numeric(df[name], errors="coerce").fillna(0)
+        return pd.Series([0] * len(df), index=df.index)
+
+    _regs_dash = st.session_state.get("registros_acumulados", [])
+
+    if not _regs_dash:
+        st.markdown("""
+        <div style="text-align:center; padding: 60px 0; color: #5A6B7C;">
+            <div style="font-size:48px; margin-bottom:16px;">📈</div>
+            <div style="font-family:'Poppins',sans-serif; font-size:16px; font-weight:500; color:#0A2540;">
+                Nenhuma fatura acumulada ainda
+            </div>
+            <div style="font-size:13px; margin-top:8px;">
+                Processe faturas na aba <strong>Processar faturas</strong> para ver o dashboard.
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+    else:
+        _df = pd.DataFrame(_regs_dash).copy()
+        _df["_data"]        = _df["ref_mes_ano"].apply(_parse_ref_dash)
+        _df["total_fatura"] = pd.to_numeric(_df["total_fatura"],  errors="coerce").fillna(0)
+        _df["__dif_total__"]= pd.to_numeric(_df["__dif_total__"], errors="coerce").fillna(0)
+        _df["consumo_kwh"]  = pd.to_numeric(_df["consumo_kwh"],   errors="coerce").fillna(0)
+        _df = _df.sort_values("_data")
+        _df["_label"] = _df["_data"].dt.strftime("%m/%Y")
+
+        # ── VISÃO GERAL ───────────────────────────────────────────────────────
+        st.markdown("### Visão Geral")
+        st.markdown("---")
+
+        _total_gasto = _df["total_fatura"].sum()
+        _val_rec     = _df["__dif_total__"].sum()
+        _n_ucs       = _df["conta_uc"].nunique()
+        _n_fat       = len(_df)
+        _n_prob      = _df["__triagem__"].isin(["INVESTIGAR", "DIVERGENCIA"]).sum()
+
+        _g1, _g2, _g3, _g4 = st.columns(4)
+        _g1.markdown(f'<div class="me-metric"><div class="val">{_brl_d(_total_gasto)}</div><div class="lbl">Total gasto no período</div></div>', unsafe_allow_html=True)
+        _g2.markdown(f'<div class="me-metric div"><div class="val">{_brl_d(_val_rec)}</div><div class="lbl">Valor passível de recuperação</div></div>', unsafe_allow_html=True)
+        _g3.markdown(f'<div class="me-metric ok"><div class="val">{_n_ucs}</div><div class="lbl">Unidades consumidoras</div></div>', unsafe_allow_html=True)
+        _g4.markdown(f'<div class="me-metric {"div" if _n_prob else "ok"}"><div class="val">{_n_prob} / {_n_fat}</div><div class="lbl">Faturas com ocorrência</div></div>', unsafe_allow_html=True)
+
+        st.markdown("")
+
+        if _PLOTLY_DASH:
+            # Linha 1: gasto mensal + donut
+            _ga, _gb = st.columns([3, 1])
+
+            with _ga:
+                _mensal = (
+                    _df.dropna(subset=["_data"])
+                    .groupby("_label")["total_fatura"].sum()
+                    .reset_index()
+                )
+                # manter ordem cronológica
+                _order = (
+                    _df.dropna(subset=["_data"])
+                    .drop_duplicates("_label")
+                    .sort_values("_data")[["_label"]]
+                )
+                _mensal = _order.merge(_mensal, on="_label", how="left")
+
+                _fig_men = _go.Figure(_go.Bar(
+                    x=_mensal["_label"], y=_mensal["total_fatura"],
+                    marker_color="#1B5179",
+                    hovertemplate="%{x}<br><b>R$ %{y:,.2f}</b><extra></extra>",
+                ))
+                _fig_men.update_layout(
+                    title="Gasto Total Mensal — todas as UCs",
+                    xaxis_title=None, yaxis_title="R$",
+                    plot_bgcolor="#FAFBF8", paper_bgcolor="#FAFBF8",
+                    height=310, margin=dict(t=45, r=15, l=60, b=35),
+                    showlegend=False,
+                )
+                st.plotly_chart(_fig_men, use_container_width=True)
+
+            with _gb:
+                _t_cnt  = _df["__triagem__"].value_counts()
+                _t_clr  = {"OK": "#5A9F37", "INVESTIGAR": "#1B5179", "DIVERGENCIA": "#BA7517"}
+                _fig_do = _go.Figure(_go.Pie(
+                    labels=list(_t_cnt.index), values=list(_t_cnt.values),
+                    hole=0.55,
+                    marker=dict(colors=[_t_clr.get(l, "#9AA8B7") for l in _t_cnt.index]),
+                    textinfo="percent+label",
+                    hovertemplate="%{label}: %{value} faturas<extra></extra>",
+                ))
+                _fig_do.update_layout(
+                    title="Triagem",
+                    height=310, margin=dict(t=45, r=5, l=5, b=5),
+                    paper_bgcolor="#FAFBF8", showlegend=False,
+                )
+                st.plotly_chart(_fig_do, use_container_width=True)
+
+            # Linha 2: ranking por UC
+            _uc_rank = (
+                _df.groupby("conta_uc")
+                .agg(total=("total_fatura", "sum"), recuperavel=("__dif_total__", "sum"))
+                .reset_index()
+                .sort_values("total", ascending=True)
+            )
+            _fig_uc = _go.Figure()
+            _fig_uc.add_trace(_go.Bar(
+                y=_uc_rank["conta_uc"], x=_uc_rank["total"],
+                orientation="h", name="Total gasto", marker_color="#1B5179",
+                hovertemplate="UC %{y}<br>Total: R$ %{x:,.2f}<extra></extra>",
+            ))
+            _fig_uc.add_trace(_go.Bar(
+                y=_uc_rank["conta_uc"], x=_uc_rank["recuperavel"],
+                orientation="h", name="Recuperável", marker_color="#BA7517",
+                hovertemplate="UC %{y}<br>Recuperável: R$ %{x:,.2f}<extra></extra>",
+            ))
+            _fig_uc.update_layout(
+                title="Gasto Total e Valor Recuperável por UC",
+                barmode="overlay", xaxis_title="R$", yaxis_title=None,
+                plot_bgcolor="#FAFBF8", paper_bgcolor="#FAFBF8",
+                height=max(200, len(_uc_rank) * 50 + 80),
+                margin=dict(t=45, r=15, l=90, b=35),
+                legend=dict(orientation="h", y=1.12, x=0),
+            )
+            st.plotly_chart(_fig_uc, use_container_width=True)
+
+        # ── POR UC ────────────────────────────────────────────────────────────
+        st.markdown("---")
+        st.markdown("### Por Unidade Consumidora")
+
+        _ucs_d = sorted(_df["conta_uc"].dropna().astype(str).unique())
+        _uc_sel_d = st.selectbox("Selecionar UC", _ucs_d, key="dash_uc")
+        _dfu = _df[_df["conta_uc"].astype(str) == _uc_sel_d].copy()
+
+        # KPIs UC
+        _uc_tot  = _dfu["total_fatura"].sum()
+        _uc_rec  = _dfu["__dif_total__"].sum()
+        _uc_kwh  = _dfu["consumo_kwh"].mean()
+        _uc_np   = _dfu["__triagem__"].isin(["INVESTIGAR", "DIVERGENCIA"]).sum()
+        _uc_nf   = len(_dfu)
+
+        _u1, _u2, _u3, _u4 = st.columns(4)
+        _u1.markdown(f'<div class="me-metric"><div class="val">{_brl_d(_uc_tot)}</div><div class="lbl">Total gasto</div></div>', unsafe_allow_html=True)
+        _u2.markdown(f'<div class="me-metric div"><div class="val">{_brl_d(_uc_rec)}</div><div class="lbl">Valor recuperável</div></div>', unsafe_allow_html=True)
+        _u3.markdown(f'<div class="me-metric ok"><div class="val">{_uc_kwh:,.0f} kWh</div><div class="lbl">Consumo médio mensal</div></div>', unsafe_allow_html=True)
+        _u4.markdown(f'<div class="me-metric {"div" if _uc_np else "ok"}"><div class="val">{_uc_np}/{_uc_nf}</div><div class="lbl">Faturas com ocorrência</div></div>', unsafe_allow_html=True)
+
+        st.markdown("")
+
+        if _PLOTLY_DASH:
+            # Gasto mensal da UC (barras coloridas por triagem)
+            _triagem_colors = [
+                "#BA7517" if t in ("INVESTIGAR", "DIVERGENCIA") else "#1B5179"
+                for t in _dfu["__triagem__"]
+            ]
+            _fig_fat = _go.Figure(_go.Bar(
+                x=_dfu["_label"], y=_dfu["total_fatura"],
+                marker_color=_triagem_colors,
+                hovertemplate="%{x}<br><b>R$ %{y:,.2f}</b><extra></extra>",
+            ))
+            _fig_fat.update_layout(
+                title=f"Evolução do Gasto Mensal — UC {_uc_sel_d}",
+                xaxis_title=None, yaxis_title="R$",
+                plot_bgcolor="#FAFBF8", paper_bgcolor="#FAFBF8",
+                height=290, margin=dict(t=45, r=15, l=60, b=35),
+                showlegend=False,
+            )
+            st.plotly_chart(_fig_fat, use_container_width=True)
+
+            _col_e, _col_f = st.columns(2)
+
+            with _col_e:
+                # Consumo kWh — ponta vs FP se disponível, senão total
+                _kp  = _col(_dfu, "consumo_ponta_kwh")
+                _kfp = _col(_dfu, "consumo_fp_kwh")
+                if _kp.sum() + _kfp.sum() > 0:
+                    _fig_kwh = _go.Figure()
+                    _fig_kwh.add_trace(_go.Bar(
+                        x=_dfu["_label"], y=_kp, name="Ponta", marker_color="#BA7517",
+                        hovertemplate="%{x}<br>Ponta: %{y:,.0f} kWh<extra></extra>",
+                    ))
+                    _fig_kwh.add_trace(_go.Bar(
+                        x=_dfu["_label"], y=_kfp, name="Fora Ponta", marker_color="#1B5179",
+                        hovertemplate="%{x}<br>F.Ponta: %{y:,.0f} kWh<extra></extra>",
+                    ))
+                    _fig_kwh.update_layout(
+                        title="Consumo kWh — Ponta vs Fora Ponta",
+                        barmode="stack", xaxis_title=None, yaxis_title="kWh",
+                        plot_bgcolor="#FAFBF8", paper_bgcolor="#FAFBF8",
+                        height=270, margin=dict(t=45, r=10, l=50, b=35),
+                        legend=dict(orientation="h", y=1.12, x=0),
+                    )
+                else:
+                    _fig_kwh = _go.Figure(_go.Bar(
+                        x=_dfu["_label"], y=_dfu["consumo_kwh"],
+                        marker_color="#1B5179",
+                        hovertemplate="%{x}<br>%{y:,.0f} kWh<extra></extra>",
+                    ))
+                    _fig_kwh.update_layout(
+                        title="Consumo kWh", xaxis_title=None, yaxis_title="kWh",
+                        plot_bgcolor="#FAFBF8", paper_bgcolor="#FAFBF8",
+                        height=270, margin=dict(t=45, r=10, l=50, b=35),
+                        showlegend=False,
+                    )
+                st.plotly_chart(_fig_kwh, use_container_width=True)
+
+            with _col_f:
+                # Demanda medida vs contratada (MT) ou tributos (BT)
+                _dem_med  = _col(_dfu, "demanda_medida_kw")
+                _dem_cont = _col(_dfu, "demanda_contratada_kw")
+                if _dem_med.sum() > 0:
+                    _fig_dem = _go.Figure()
+                    _fig_dem.add_trace(_go.Bar(
+                        x=_dfu["_label"], y=_dem_med,
+                        name="Medida", marker_color="#1B5179",
+                        hovertemplate="%{x}<br>Medida: %{y:,.1f} kW<extra></extra>",
+                    ))
+                    if _dem_cont.sum() > 0:
+                        _fig_dem.add_trace(_go.Scatter(
+                            x=_dfu["_label"], y=_dem_cont,
+                            mode="lines+markers", name="Contratada",
+                            line=dict(color="#5A9F37", width=2, dash="dash"),
+                            hovertemplate="%{x}<br>Contratada: %{y:,.1f} kW<extra></extra>",
+                        ))
+                    _fig_dem.update_layout(
+                        title="Demanda kW — Medida vs Contratada",
+                        xaxis_title=None, yaxis_title="kW",
+                        plot_bgcolor="#FAFBF8", paper_bgcolor="#FAFBF8",
+                        height=270, margin=dict(t=45, r=10, l=50, b=35),
+                        legend=dict(orientation="h", y=1.12, x=0),
+                    )
+                    st.plotly_chart(_fig_dem, use_container_width=True)
+                else:
+                    # Tributos por mês (BT)
+                    _icms = _col(_dfu, "icms_valor")
+                    _pis  = _col(_dfu, "pis_valor")
+                    _cof  = _col(_dfu, "cofins_valor")
+                    _fig_trib = _go.Figure()
+                    _fig_trib.add_trace(_go.Bar(x=_dfu["_label"], y=_icms, name="ICMS",   marker_color="#0A2540"))
+                    _fig_trib.add_trace(_go.Bar(x=_dfu["_label"], y=_pis,  name="PIS",    marker_color="#1B5179"))
+                    _fig_trib.add_trace(_go.Bar(x=_dfu["_label"], y=_cof,  name="COFINS", marker_color="#5A9F37"))
+                    _fig_trib.update_layout(
+                        title="Tributos por Mês",
+                        barmode="stack", xaxis_title=None, yaxis_title="R$",
+                        plot_bgcolor="#FAFBF8", paper_bgcolor="#FAFBF8",
+                        height=270, margin=dict(t=45, r=10, l=50, b=35),
+                        legend=dict(orientation="h", y=1.12, x=0),
+                    )
+                    st.plotly_chart(_fig_trib, use_container_width=True)
+
+            # Custos acessórios (reativo + USDG ultrap)
+            _rea_p  = _col(_dfu, "valor_reativo_exc_ponta")
+            _rea_fp = _col(_dfu, "valor_reativo_exc_fp")
+            _usdg_u = _col(_dfu, "valor_usdg_ultrap")
+            _total_aces = _rea_p.sum() + _rea_fp.sum() + _usdg_u.sum()
+            if _total_aces > 0:
+                _fig_aces = _go.Figure()
+                if (_rea_p + _rea_fp).sum() > 0:
+                    _fig_aces.add_trace(_go.Bar(
+                        x=_dfu["_label"], y=(_rea_p + _rea_fp).values,
+                        name="Reativo Exc.", marker_color="#BA7517",
+                        hovertemplate="%{x}<br>Reativo: R$ %{y:,.2f}<extra></extra>",
+                    ))
+                if _usdg_u.sum() > 0:
+                    _fig_aces.add_trace(_go.Bar(
+                        x=_dfu["_label"], y=_usdg_u.values,
+                        name="USDG Ultrap.", marker_color="#0A2540",
+                        hovertemplate="%{x}<br>USDG Ultrap: R$ %{y:,.2f}<extra></extra>",
+                    ))
+                _fig_aces.update_layout(
+                    title="Custos Acessórios — Reativo Excedente + USDG Ultrapassagem",
+                    barmode="stack", xaxis_title=None, yaxis_title="R$",
+                    plot_bgcolor="#FAFBF8", paper_bgcolor="#FAFBF8",
+                    height=270, margin=dict(t=45, r=10, l=60, b=35),
+                    legend=dict(orientation="h", y=1.12, x=0),
+                )
+                st.plotly_chart(_fig_aces, use_container_width=True)
 
 
 # ── Tab 3: Relatório Final ────────────────────────────────────────────────────
@@ -945,6 +1289,9 @@ with tab3:
         if not cliente_val:
             st.warning("⚠️ Informe o **nome do cliente** na barra lateral antes de gerar o relatório.")
 
+        if _RELATORIO_PDF_ERRO:
+            st.error(f"⚠️ Módulo PDF falhou ao carregar: `{_RELATORIO_PDF_ERRO}`")
+
         col_btn, col_info = st.columns([2, 3])
         with col_btn:
             gerar = st.button(
@@ -968,207 +1315,3 @@ with tab3:
                     )
                 except Exception as e:
                     st.error(f"Erro ao gerar relatório: {e}")
-
-
-# ── Tab 4: Histórico de Consumo ───────────────────────────────────────────────
-with tab4:
-    try:
-        import plotly.graph_objects as go
-        _PLOTLY_OK = True
-    except ImportError:
-        _PLOTLY_OK = False
-
-    _registros_hist = st.session_state.get("registros_acumulados", [])
-    _df_hist_all = pd.DataFrame([
-        {
-            "uc":           r.get("conta_uc") or "—",
-            "distribuidora": r.get("distribuidora", ""),
-            "ref":          r.get("ref_mes_ano") or "",
-            "consumo_kwh":  r.get("consumo_kwh"),
-            "total_fatura": r.get("total_fatura"),
-            "arquivo":      r.get("arquivo", ""),
-        }
-        for r in _registros_hist
-        if r.get("consumo_kwh") is not None
-    ])
-
-    if _df_hist_all.empty:
-        st.markdown("""
-        <div style="text-align:center; padding: 60px 0; color: #5A6B7C;">
-            <div style="font-size:48px; margin-bottom:16px;">📈</div>
-            <div style="font-family:'Poppins',sans-serif; font-size:16px; font-weight:500; color:#0A2540;">
-                Nenhum dado de consumo disponível
-            </div>
-            <div style="font-size:13px; margin-top:8px;">
-                Processe faturas na aba <strong>Processar faturas</strong> para ver o histórico.
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
-    else:
-        def _parse_ref(ref):
-            try:
-                m, y = ref.strip().split("/")
-                return pd.Timestamp(year=int(y), month=int(m), day=1)
-            except Exception:
-                return pd.NaT
-
-        _df_hist_all["data"] = _df_hist_all["ref"].apply(_parse_ref)
-        _df_hist_all = _df_hist_all.sort_values("data")
-
-        _ucs = sorted(_df_hist_all["uc"].unique())
-
-        # Resumo por UC (quando há mais de uma)
-        if len(_ucs) > 1:
-            st.markdown("#### Resumo por unidade consumidora")
-            _resumo = []
-            for _uc in _ucs:
-                _dfu = _df_hist_all[_df_hist_all["uc"] == _uc]
-                _med = _dfu["consumo_kwh"].mean()
-                _na  = int((((_dfu["consumo_kwh"] - _med).abs() / _med) > 0.15).sum()) if _med else 0
-                _resumo.append({
-                    "UC": _uc,
-                    "Distribuidora": _dfu["distribuidora"].iloc[0],
-                    "Meses": len(_dfu),
-                    "Média (kWh)": round(_med, 1),
-                    "Anomalias": _na,
-                })
-            st.dataframe(pd.DataFrame(_resumo), use_container_width=True, hide_index=True)
-            st.divider()
-
-        _uc_sel = st.selectbox("Selecionar Unidade Consumidora", _ucs) if len(_ucs) > 1 else _ucs[0]
-        _df_uc  = _df_hist_all[_df_hist_all["uc"] == _uc_sel].copy()
-
-        _media = _df_uc["consumo_kwh"].mean()
-        _df_uc["desvio_pct"] = ((_df_uc["consumo_kwh"] - _media) / _media * 100).round(1)
-        _df_uc["anomalia"]   = _df_uc["consumo_kwh"].apply(
-            lambda x: abs(x - _media) / _media > 0.15 if _media else False
-        )
-
-        _n_meses = len(_df_uc)
-        _n_anom  = int(_df_uc["anomalia"].sum())
-
-        # Métricas
-        _ca, _cb, _cc = st.columns(3)
-        _ca.markdown(f'<div class="me-metric"><div class="val">{_n_meses}</div><div class="lbl">Meses no histórico</div></div>', unsafe_allow_html=True)
-        _cb.markdown(f'<div class="me-metric ok"><div class="val">{_media:.0f} kWh</div><div class="lbl">Consumo médio</div></div>', unsafe_allow_html=True)
-        _cc.markdown(f'<div class="me-metric {"div" if _n_anom else "ok"}"><div class="val">{_n_anom}</div><div class="lbl">Meses com anomalia (±15%)</div></div>', unsafe_allow_html=True)
-
-        st.markdown("")
-
-        # Gráfico
-        if _PLOTLY_OK:
-            _df_ok   = _df_uc[~_df_uc["anomalia"]]
-            _df_anom = _df_uc[_df_uc["anomalia"]]
-
-            _fig = go.Figure()
-
-            # Linha de consumo
-            _fig.add_trace(go.Scatter(
-                x=_df_uc["ref"], y=_df_uc["consumo_kwh"],
-                mode="lines",
-                line=dict(color="#1B5179", width=2),
-                showlegend=False, hoverinfo="skip",
-            ))
-
-            # Pontos normais
-            _fig.add_trace(go.Scatter(
-                x=_df_ok["ref"], y=_df_ok["consumo_kwh"],
-                mode="markers",
-                marker=dict(color="#5A9F37", size=9),
-                name="Normal",
-                hovertemplate="%{x}<br><b>%{y:.0f} kWh</b><extra></extra>",
-            ))
-
-            # Pontos anômalos
-            if not _df_anom.empty:
-                _fig.add_trace(go.Scatter(
-                    x=_df_anom["ref"], y=_df_anom["consumo_kwh"],
-                    mode="markers",
-                    marker=dict(color="#BA7517", size=13, symbol="circle",
-                                line=dict(width=2, color="#7A4D0E")),
-                    name="Anomalia (±15%)",
-                    customdata=_df_anom["desvio_pct"],
-                    hovertemplate="%{x}<br><b>%{y:.0f} kWh</b><br>Desvio: %{customdata:+.1f}%<extra></extra>",
-                ))
-
-            # Linha da média e faixas
-            _fig.add_hline(y=_media, line_dash="dash", line_color="#9AA8B7",
-                           annotation_text=f"Média {_media:.0f} kWh",
-                           annotation_position="top right")
-            _fig.add_hrect(y0=_media * 0.85, y1=_media * 1.15,
-                           fillcolor="#5A9F37", opacity=0.06, line_width=0)
-            _fig.add_hline(y=_media * 1.15, line_dash="dot", line_color="#BA7517", opacity=0.5,
-                           annotation_text="+15%", annotation_position="top right")
-            _fig.add_hline(y=_media * 0.85, line_dash="dot", line_color="#BA7517", opacity=0.5,
-                           annotation_text="−15%", annotation_position="bottom right")
-
-            _fig.update_layout(
-                title=dict(text=f"Histórico de Consumo — UC {_uc_sel}",
-                           font=dict(family="Poppins", size=15, color="#0A2540")),
-                xaxis_title="Mês/Ano",
-                yaxis_title="Consumo (kWh)",
-                plot_bgcolor="#FAFBF8",
-                paper_bgcolor="#FAFBF8",
-                legend=dict(orientation="h", y=1.1, x=0),
-                height=420,
-                margin=dict(t=70, r=110),
-            )
-            st.plotly_chart(_fig, use_container_width=True)
-        else:
-            st.line_chart(_df_uc.set_index("ref")["consumo_kwh"])
-
-        # Alertas textuais
-        if _n_anom:
-            for _, _row in _df_uc[_df_uc["anomalia"]].iterrows():
-                _dir = "acima" if _row["desvio_pct"] > 0 else "abaixo"
-                st.warning(f"⚠️ **{_row['ref']}** — {_row['consumo_kwh']:.0f} kWh · {abs(_row['desvio_pct']):.1f}% {_dir} da média")
-        else:
-            st.success(f"✅ Consumo estável nos {_n_meses} meses analisados")
-
-        # Tabela completa
-        st.divider()
-        st.markdown("#### Histórico completo")
-        _df_tab = _df_uc[["ref", "consumo_kwh", "desvio_pct", "total_fatura", "arquivo"]].copy()
-        _df_tab.columns = ["Mês/Ano", "Consumo (kWh)", "Desvio (%)", "Total Fatura (R$)", "Arquivo"]
-        _df_tab.insert(3, "Anomalia", _df_uc["anomalia"].map({True: "⚠️ Sim", False: "✅ Não"}).values)
-        st.dataframe(_df_tab, use_container_width=True, hide_index=True)
-
-
-# ── Tab 5: Sobre ──────────────────────────────────────────────────────────────
-with tab5:
-    st.markdown("#### Como funciona")
-    st.markdown("""
-A ferramenta extrai, audita e classifica cada item da fatura de forma automática:
-
-1. Você carrega os PDFs das faturas
-2. O sistema extrai todos os dados: cliente, UC, leituras, valores, bandeiras, tributos
-3. Recalcula tarifas conforme a REH ANEEL vigente na data da fatura
-4. Compara o cobrado vs o auditado e classifica como **Conferido / Investigar / Atenção**
-5. Gera Excel-mestre consolidado + individuais detalhados por fatura
-""")
-
-    st.divider()
-    st.markdown("#### Verificações automáticas")
-    st.markdown("""
-- Tarifa TUSD/TE com gross-up de tributos vs REH vigente
-- Tese do Século — exclusão do ICMS da base PIS/COFINS (RE 574.706/STF)
-- ICMS calculado sobre a base correta
-- Bandeira tarifária proporcional aos dias em cada patamar
-- Fio B — Lei 14.300/2022 (pre-MMGD isento, pos-MMGD escalonado)
-- Periodo de leitura dentro dos limites da REN 1.000/2021 (15-45 dias)
-- Cobranças retroativas (juros, multa, atualização monetária)
-- Divergência entre total da fatura e total a pagar
-- GD: compensação superior à energia injetada
-""")
-
-    st.divider()
-    st.markdown("#### REHs cadastradas")
-    st.markdown("""
-| REH | Vigência | TUSD (R$/kWh) | TE (R$/kWh) |
-|---|---|---|---|
-| 3409/2024 | 23/10/2024 – 22/10/2025 | 0,37008 | 0,32865 |
-| 3543/2025 | 23/10/2025 – 22/10/2026 | 0,39564 | 0,34405 |
-""")
-
-    st.divider()
-    st.caption("Minuto Energia - Gestao e Eficiencia Energetica - minutoenergia.com.br")
