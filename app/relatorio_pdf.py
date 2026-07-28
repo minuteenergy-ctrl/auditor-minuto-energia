@@ -178,11 +178,48 @@ def _chart_consumo_uc(refs, consumos, media, tol=0.15):
         Patch(color=C_AMBER, label="Acima do limite"),
         Patch(color=C_BLUE,  label="Abaixo do limite"),
     ]
-    ax.legend(handles=legend_elements, loc="upper left", fontsize=7.5,
-              frameon=False, ncol=3)
+    ax.legend(handles=legend_elements, loc="upper right", fontsize=7,
+              frameon=True, framealpha=0.88, ncol=1,
+              edgecolor="#E5EBE0", facecolor="white")
     ax.set_title(
         f"Média: {media:,.0f} kWh  |  Banda ±{int(tol*100)}%: "
         f"{lim_inf:,.0f} – {lim_sup:,.0f} kWh",
+        fontsize=9.5, fontweight="bold", color=C_NAVY, pad=6,
+    )
+    fig.tight_layout()
+    return _fig_to_img(fig)
+
+
+def _chart_barras_mensal(refs, valores, titulo, cor, total):
+    """Bar chart mensal genérico com valor por período e total no título."""
+    def _brl_ax(v):
+        return f"R${v:,.0f}".replace(",", "X").replace(".", ",").replace("X", ".")
+
+    n = len(refs)
+    fig_w = max(5.8, n * 0.58)
+    fig, ax = plt.subplots(figsize=(fig_w, 3.2), facecolor="white")
+
+    x = np.arange(n)
+    bars = ax.bar(x, valores, color=cor, width=0.62, edgecolor="white", linewidth=0.8)
+
+    max_v = max(valores) if valores else 1
+    for bar, v in zip(bars, valores):
+        if v > 0:
+            ax.text(bar.get_x() + bar.get_width() / 2,
+                    v + max_v * 0.025,
+                    _brl_ax(v),
+                    ha="center", va="bottom", fontsize=6.5,
+                    color=C_NAVY, fontweight="bold")
+
+    ax.set_xticks(x)
+    ax.set_xticklabels(refs, rotation=45, ha="right", fontsize=7)
+    ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda v, _: _brl_ax(v)))
+    ax.spines[["top", "right"]].set_visible(False)
+    ax.spines[["left", "bottom"]].set_color("#E5EBE0")
+    ax.set_xlim(-0.6, n - 0.4)
+    total_str = f"R${total:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+    ax.set_title(
+        f"{titulo}   —   Total: {total_str}",
         fontsize=9.5, fontweight="bold", color=C_NAVY, pad=6,
     )
     fig.tight_layout()
@@ -576,6 +613,16 @@ def gerar_relatorio_pdf(cliente_nome, registros, parceiro_nome="", valor_recuper
         ST["body"]))
     story.append(Spacer(1, 5 * mm))
 
+    # Pré-computar reativo e USDG (usados dentro do loop por UC)
+    regs_reativo = [
+        r for r in registros
+        if (r.get("valor_reativo_exc_ponta") or 0) + (r.get("valor_reativo_exc_fp") or 0) > 0
+    ]
+    regs_usdg_ultrap = [
+        r for r in registros
+        if (r.get("valor_usdg_ultrap") or 0) > 0
+    ]
+
     # Agrupar consumos por UC, ordenados por período
     uc_consumo = defaultdict(list)
     for reg in registros:
@@ -658,175 +705,51 @@ def gerar_relatorio_pdf(cliente_nome, registros, parceiro_nome="", valor_recuper
                 "Todas as faturas estão dentro da tolerância de ±15% da média histórica.",
                 ST["obs"]))
 
+        # ── Gráficos de Reativo e USDG para esta UC ──────────────────────────────
+        rea_uc  = [r for r in regs_reativo    if str(r.get("conta_uc") or "") == str(uc)]
+        usdg_uc = [r for r in regs_usdg_ultrap if str(r.get("conta_uc") or "") == str(uc)]
+
+        if rea_uc or usdg_uc:
+            story.append(Spacer(1, 5 * mm))
+            _graf_row = []
+            _col_w    = []
+
+            if rea_uc:
+                _r_sorted = sorted(rea_uc, key=lambda x: _sort_key_ref(x.get("ref_mes_ano") or ""))
+                _refs_r   = [r.get("ref_mes_ano", "") for r in _r_sorted]
+                _vals_r   = [(r.get("valor_reativo_exc_ponta") or 0)
+                             + (r.get("valor_reativo_exc_fp") or 0) for r in _r_sorted]
+                _buf_r    = _chart_barras_mensal(
+                    _refs_r, _vals_r, "Reativo Excedente", C_AMBER, sum(_vals_r))
+                _img_w    = (CW / 2) - 4 * mm if usdg_uc else CW
+                _graf_row.append(Image(_buf_r, width=_img_w, height=115))
+                _col_w.append(_img_w + 4 * mm)
+
+            if usdg_uc:
+                _u_sorted = sorted(usdg_uc, key=lambda x: _sort_key_ref(x.get("ref_mes_ano") or ""))
+                _refs_u   = [r.get("ref_mes_ano", "") for r in _u_sorted]
+                _vals_u   = [r.get("valor_usdg_ultrap") or 0 for r in _u_sorted]
+                _buf_u    = _chart_barras_mensal(
+                    _refs_u, _vals_u, "USDG Ultrapassagem", C_BLUE, sum(_vals_u))
+                _img_w    = (CW / 2) - 4 * mm if rea_uc else CW
+                _graf_row.append(Image(_buf_u, width=_img_w, height=115))
+                _col_w.append(_img_w + 4 * mm)
+
+            story.append(Table(
+                [_graf_row],
+                colWidths=_col_w,
+                style=TableStyle([
+                    ("ALIGN",   (0, 0), (-1, -1), "CENTER"),
+                    ("VALIGN",  (0, 0), (-1, -1), "MIDDLE"),
+                    ("LEFTPADDING",  (0, 0), (-1, -1), 0),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+                    ("TOPPADDING",   (0, 0), (-1, -1), 0),
+                    ("BOTTOMPADDING",(0, 0), (-1, -1), 0),
+                ])))
+
         story.append(Spacer(1, 6 * mm))
 
     story.append(PageBreak())
-
-    # P6b: Histórico de Consumo Reativo (apenas quando ≥ 2 registros têm reativo)
-    regs_reativo = [
-        r for r in registros
-        if (r.get("valor_reativo_exc_ponta") or 0) + (r.get("valor_reativo_exc_fp") or 0) > 0
-    ]
-    if len(regs_reativo) >= 2:
-        story.append(Paragraph("Análise de Energia Reativa Excedente", ST["section"]))
-        story.append(HRFlowable(width="100%", thickness=1.5, color=LIME, spaceAfter=8))
-        story.append(Paragraph(
-            "A tabela a seguir apresenta o histórico de consumo de energia reativa excedente faturado "
-            "pela distribuidora. Valores recorrentes podem indicar necessidade de correção do fator de "
-            "potência da instalação.",
-            ST["body"]))
-        story.append(Spacer(1, 5 * mm))
-
-        # Cabeçalho da tabela
-        HDR_REA = ["Ref", "kVarh Ponta", "kVarh F.Ponta", "R$ Ponta", "R$ F.Ponta", "Total R$"]
-        tbl_rea_data = [HDR_REA]
-        total_ponta_r = total_fp_r = 0.0
-
-        for reg in sorted(regs_reativo, key=lambda x: x.get("ref_mes_ano", "")):
-            ref   = reg.get("ref_mes_ano", "")
-            kp    = reg.get("consumo_reativo_exc_ponta_kwh") or 0
-            kfp   = reg.get("consumo_reativo_exc_fp_kwh")   or 0
-            rp    = reg.get("valor_reativo_exc_ponta")       or 0
-            rfp   = reg.get("valor_reativo_exc_fp")          or 0
-            tot   = rp + rfp
-            total_ponta_r += rp
-            total_fp_r    += rfp
-            tbl_rea_data.append([
-                ref,
-                f"{kp:,.3f}" if kp else "—",
-                f"{kfp:,.3f}" if kfp else "—",
-                f"R$ {rp:,.2f}",
-                f"R$ {rfp:,.2f}",
-                f"R$ {tot:,.2f}",
-            ])
-
-        # Linha de totais
-        total_geral = total_ponta_r + total_fp_r
-        tbl_rea_data.append([
-            "TOTAL", "", "",
-            f"R$ {total_ponta_r:,.2f}",
-            f"R$ {total_fp_r:,.2f}",
-            f"R$ {total_geral:,.2f}",
-        ])
-
-        n_rea = len(tbl_rea_data)
-        rea_styles = [
-            ("BACKGROUND",    (0, 0), (-1, 0),       HexColor(C_NAVY)),
-            ("TEXTCOLOR",     (0, 0), (-1, 0),       WHITE),
-            ("FONTNAME",      (0, 0), (-1, 0),       "Helvetica-Bold"),
-            ("FONTSIZE",      (0, 0), (-1, -1),       8),
-            ("ALIGN",         (1, 0), (-1, -1),      "RIGHT"),
-            ("ALIGN",         (0, 0), (0, -1),       "CENTER"),
-            ("BACKGROUND",    (0, n_rea - 1), (-1, n_rea - 1), HexColor(C_BLUE)),
-            ("TEXTCOLOR",     (0, n_rea - 1), (-1, n_rea - 1), WHITE),
-            ("FONTNAME",      (0, n_rea - 1), (-1, n_rea - 1), "Helvetica-Bold"),
-            ("GRID",          (0, 0), (-1, -1),       0.5, LGRAY),
-            ("ROWBACKGROUNDS",(0, 1), (-1, n_rea - 2), [OFFWHITE, WHITE]),
-            ("TOPPADDING",    (0, 0), (-1, -1),       5),
-            ("BOTTOMPADDING", (0, 0), (-1, -1),       5),
-        ]
-        col_w_rea = [CW * f for f in [0.12, 0.17, 0.17, 0.18, 0.18, 0.18]]
-        rea_tbl = Table(tbl_rea_data, colWidths=col_w_rea,
-                        style=TableStyle(rea_styles))
-        story.append(rea_tbl)
-        story.append(Spacer(1, 4 * mm))
-        story.append(Paragraph(
-            f"Total cobrado em energia reativa excedente no período: <b>R$ {total_geral:,.2f}</b>",
-            ST["obs"]))
-        story.append(PageBreak())
-
-    # P6c: USDG — Ultrapassagem de Demanda de Geração
-    regs_usdg_ultrap = [
-        r for r in registros
-        if (r.get("valor_usdg_ultrap") or 0) > 0
-    ]
-    if regs_usdg_ultrap:
-        story.append(Paragraph("Ultrapassagem de Demanda de Geração (USDG)", ST["section"]))
-        story.append(HRFlowable(width="100%", thickness=1.5, color=LIME, spaceAfter=8))
-
-        # Período de ocorrência
-        refs_ultrap = sorted(
-            [r.get("ref_mes_ano") for r in regs_usdg_ultrap if r.get("ref_mes_ano")],
-            key=_sort_key_ref,
-        )
-        periodo_ultrap = (
-            refs_ultrap[0] if len(refs_ultrap) == 1
-            else f"{refs_ultrap[0]} a {refs_ultrap[-1]}"
-        )
-
-        story.append(Paragraph(
-            f"Foram identificadas <b>{len(regs_usdg_ultrap)} fatura(s)</b> com cobrança de "
-            f"ultrapassagem de demanda de geração (USDG Ultrap) no período "
-            f"<b>{periodo_ultrap}</b>. A ultrapassagem ocorre quando a potência injetada "
-            "pela geração distribuída supera a demanda contratada de geração, implicando "
-            "cobrança adicional pela distribuidora.",
-            ST["body"]))
-        story.append(Spacer(1, 5 * mm))
-
-        HDR_USDG = [
-            "Ref",
-            "USDG medida (kW)",
-            "Ultrap (kW)",
-            "Tarifa s/ ICMS\n(R$/kW)",
-            "Tarifa c/ ICMS\n(R$/kW)",
-            "Valor cobrado (R$)",
-        ]
-        tbl_usdg_data = [HDR_USDG]
-        total_usdg_ultrap = 0.0
-
-        for reg in sorted(regs_usdg_ultrap, key=lambda x: _sort_key_ref(x.get("ref_mes_ano") or "")):
-            ref      = reg.get("ref_mes_ano", "")
-            usdg_kw  = reg.get("usdg_kw") or 0
-            ultrap_kw = reg.get("usdg_ultrap_kw") or 0
-            tar_sem  = reg.get("usdg_ultrap_sem")
-            tar_com  = reg.get("usdg_ultrap_com")
-            valor    = reg.get("valor_usdg_ultrap") or 0
-            total_usdg_ultrap += valor
-
-            tbl_usdg_data.append([
-                ref,
-                f"{usdg_kw:,.4f}" if usdg_kw else "—",
-                f"{ultrap_kw:,.4f}" if ultrap_kw else "—",
-                f"R$ {tar_sem:,.6f}" if tar_sem is not None else "—",
-                f"R$ {tar_com:,.6f}" if tar_com is not None else "—",
-                f"R$ {valor:,.2f}",
-            ])
-
-        # Linha de total
-        tbl_usdg_data.append([
-            f"TOTAL ({len(regs_usdg_ultrap)} fatura(s))",
-            "", "", "", "",
-            f"R$ {total_usdg_ultrap:,.2f}",
-        ])
-
-        n_usdg = len(tbl_usdg_data)
-        usdg_styles = [
-            ("BACKGROUND",    (0, 0), (-1, 0),            HexColor(C_NAVY)),
-            ("TEXTCOLOR",     (0, 0), (-1, 0),            WHITE),
-            ("FONTNAME",      (0, 0), (-1, 0),            "Helvetica-Bold"),
-            ("FONTSIZE",      (0, 0), (-1, -1),            8),
-            ("ALIGN",         (1, 0), (-1, -1),           "RIGHT"),
-            ("ALIGN",         (0, 0), (0, -1),            "CENTER"),
-            ("BACKGROUND",    (0, n_usdg - 1), (-1, n_usdg - 1), HexColor(C_BLUE)),
-            ("TEXTCOLOR",     (0, n_usdg - 1), (-1, n_usdg - 1), WHITE),
-            ("FONTNAME",      (0, n_usdg - 1), (-1, n_usdg - 1), "Helvetica-Bold"),
-            ("GRID",          (0, 0), (-1, -1),            0.5, LGRAY),
-            ("ROWBACKGROUNDS",(0, 1), (-1, n_usdg - 2),  [OFFWHITE, WHITE]),
-            ("TOPPADDING",    (0, 0), (-1, -1),            5),
-            ("BOTTOMPADDING", (0, 0), (-1, -1),            5),
-            ("LEFTPADDING",   (0, 0), (-1, -1),            5),
-            ("SPAN",          (0, n_usdg - 1), (4, n_usdg - 1)),
-        ]
-        col_w_usdg = [CW * f for f in [0.11, 0.17, 0.14, 0.19, 0.19, 0.20]]
-        usdg_tbl = Table(tbl_usdg_data, colWidths=col_w_usdg,
-                         style=TableStyle(usdg_styles))
-        story.append(usdg_tbl)
-        story.append(Spacer(1, 4 * mm))
-        story.append(Paragraph(
-            f"Total cobrado em ultrapassagem de demanda de geração no período "
-            f"<b>{periodo_ultrap}</b>: <b>R$ {total_usdg_ultrap:,.2f}</b>",
-            ST["obs"]))
-        story.append(PageBreak())
 
     # P7: Andamento Processual
     story.append(Paragraph("Andamento Processual — Auditoria de Faturas", ST["section"]))
