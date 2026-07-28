@@ -486,6 +486,7 @@ def _extract_formato2(lines, full_text):
         data["total_a_pagar"] = _to_number(m.group(3))
 
     # Bloco tributos
+    # Formato NeoEnergia: "aliq% aliq% ICMS base aliq valor"
     m1 = re.search(r"([\d,]+)%\s+([\d,]+)%\s+ICMS\s+([\d.,]+)\s+([\d.,]+)\s+([\d.,]+)", full_text)
     m2t = re.search(r"PIS/PASEP\s+([\d.,]+)\s+([\d.,]+)\s+([\d.,]+)", full_text)
     m3 = re.search(r"COFINS\s+([\d.,]+)\s+([\d.,]+)\s+([\d.,]+)", full_text)
@@ -496,6 +497,15 @@ def _extract_formato2(lines, full_text):
             "aliquota_pct": _to_number(m1.group(4)),
             "valor": _to_number(m1.group(5)),
         }
+    else:
+        # Formato CPFL Piratininga DANF3E: "ICMS base aliq valor"
+        m1b = re.search(r"ICMS\s+([\d.,]+)\s+([\d,]+)\s+([\d.,]+)", full_text)
+        if m1b:
+            tributos["icms"] = {
+                "base": _to_number(m1b.group(1)),
+                "aliquota_pct": _to_number(m1b.group(2)),
+                "valor": _to_number(m1b.group(3)),
+            }
     if m2t:
         tributos["pis"] = {
             "base": _to_number(m2t.group(1)),
