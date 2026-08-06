@@ -33,6 +33,20 @@ def parse_fatura(pdf_path):
     with pdfplumber.open(pdf_path) as pdf:
         text = "\n".join(p.extract_text() or "" for p in pdf.pages)
 
+    # ── DEBUG TEMPORÁRIO — remover após diagnóstico ───────────────────────────
+    import sys as _sys, pdfplumber as _pdf
+    print(f"[DBG] pdfplumber={_pdf.__version__}", file=_sys.stderr, flush=True)
+    for _lbl, _pat in [("ICMS", "ICMS"), ("PIS", "PIS/PASEP"),
+                        ("INJ_TUSD", "Energia Atv Inj Fponta TUSD"),
+                        ("INJ_TE",   "Energia Atv Injetada Fponta TE"),
+                        ("PONTA",    r"Consumo Ponta \[KWh\]")]:
+        _m = re.search(_pat, text)
+        if _m:
+            print(f"[DBG {_lbl}] {repr(text[_m.start():_m.start()+200])}", file=_sys.stderr, flush=True)
+        else:
+            print(f"[DBG {_lbl}] NÃO ENCONTRADO", file=_sys.stderr, flush=True)
+    # ── FIM DEBUG ─────────────────────────────────────────────────────────────
+
     r = {"arquivo": Path(pdf_path).name, "distribuidora": "CPFL Paulista"}
 
     # ── Ref mês/ano + vencimento + total ─────────────────────────────────────
@@ -86,8 +100,8 @@ def parse_fatura(pdf_path):
 
     # ── Consumo Ponta — TUSD ──────────────────────────────────────────────────
     m = re.search(
-        r'Consumo Ponta \[KWh\] - TUSD.*?kWh\s+([\d\.,]+)\s+([\d,]+)\s+([\d,]+)\s+([\d\.,]+)',
-        text
+        r'Consumo Ponta \[KWh\] - TUSD.*?kWh\s+([\d\.,]+)\s+([\d\.,]+)\s+([\d\.,]+)\s+([\d\.,]+)',
+        text, re.DOTALL
     )
     if m:
         r["consumo_ponta_kwh"] = _num(m.group(1))
@@ -97,8 +111,8 @@ def parse_fatura(pdf_path):
 
     # ── Consumo Fora Ponta — TUSD ─────────────────────────────────────────────
     m = re.search(
-        r'Consumo Fora Ponta \[KWh\]-TUSD.*?kWh\s+([\d\.,]+)\s+([\d,]+)\s+([\d,]+)\s+([\d\.,]+)',
-        text
+        r'Consumo Fora Ponta \[KWh\]-TUSD.*?kWh\s+([\d\.,]+)\s+([\d\.,]+)\s+([\d\.,]+)\s+([\d\.,]+)',
+        text, re.DOTALL
     )
     if m:
         r["consumo_fp_kwh"]  = _num(m.group(1))
@@ -108,8 +122,8 @@ def parse_fatura(pdf_path):
 
     # ── Consumo Ponta — TE ───────────────────────────────────────────────────
     m = re.search(
-        r'Cons Ponta - TE.*?kWh\s+([\d\.,]+)\s+([\d,]+)\s+([\d,]+)\s+([\d\.,]+)',
-        text
+        r'Cons Ponta - TE.*?kWh\s+([\d\.,]+)\s+([\d\.,]+)\s+([\d\.,]+)\s+([\d\.,]+)',
+        text, re.DOTALL
     )
     if m:
         r["te_ponta_sem"]   = _num(m.group(2))
@@ -118,8 +132,8 @@ def parse_fatura(pdf_path):
 
     # ── Consumo Fora Ponta — TE ──────────────────────────────────────────────
     m = re.search(
-        r'Cons FPonta TE.*?kWh\s+([\d\.,]+)\s+([\d,]+)\s+([\d,]+)\s+([\d\.,]+)',
-        text
+        r'Cons FPonta TE.*?kWh\s+([\d\.,]+)\s+([\d\.,]+)\s+([\d\.,]+)\s+([\d\.,]+)',
+        text, re.DOTALL
     )
     if m:
         r["te_fp_sem"]   = _num(m.group(2))
@@ -128,8 +142,8 @@ def parse_fatura(pdf_path):
 
     # ── Demanda TUSD ─────────────────────────────────────────────────────────
     m = re.search(
-        r'Demanda \[kW\] - TUSD.*?kW\s+([\d\.,]+)\s+([\d,]+)\s+([\d,]+)\s+([\d\.,]+)',
-        text
+        r'Demanda \[kW\] - TUSD.*?kW\s+([\d\.,]+)\s+([\d\.,]+)\s+([\d\.,]+)\s+([\d\.,]+)',
+        text, re.DOTALL
     )
     if m:
         r["demanda_medida_kw"] = _num(m.group(1))
@@ -139,8 +153,8 @@ def parse_fatura(pdf_path):
 
     # ── Demanda Ultrapassagem ─────────────────────────────────────────────────
     m = re.search(
-        r'Demanda Ultrap \[kW\] - TUSD.*?kW\s+([\d\.,]+)\s+([\d,]+)\s+([\d,]+)\s+([\d\.,]+)',
-        text
+        r'Demanda Ultrap \[kW\] - TUSD.*?kW\s+([\d\.,]+)\s+([\d\.,]+)\s+([\d\.,]+)\s+([\d\.,]+)',
+        text, re.DOTALL
     )
     if m:
         r["demanda_ultrap_kw"]    = _num(m.group(1))
@@ -150,8 +164,8 @@ def parse_fatura(pdf_path):
 
     # ── Energia Injetada FP — TUSD (GD) ──────────────────────────────────────
     m = re.search(
-        r'Energia Atv Inj Fponta TUSD.*?kWh\s+([\d\.,]+)\s+([\d,]+)\s+([\d,]+)\s+([\d\.,\-]+)',
-        text
+        r'Energia Atv Inj Fponta TUSD.*?kWh\s+([\d\.,]+)\s+([\d\.,]+)\s+([\d\.,]+)\s+([\d\.,\-]+)',
+        text, re.DOTALL
     )
     if m:
         r["injetada_fp_kwh"]   = _num(m.group(1))
@@ -159,8 +173,8 @@ def parse_fatura(pdf_path):
 
     # ── Energia Injetada Ponta — TUSD (GD, quando existir) ───────────────────
     m = re.search(
-        r'Energia Atv Inj Ponta TUSD.*?kWh\s+([\d\.,]+)\s+([\d,]+)\s+([\d,]+)\s+([\d\.,\-]+)',
-        text
+        r'Energia Atv Inj Ponta TUSD.*?kWh\s+([\d\.,]+)\s+([\d\.,]+)\s+([\d\.,]+)\s+([\d\.,\-]+)',
+        text, re.DOTALL
     )
     if m:
         r["injetada_ponta_kwh"]   = _num(m.group(1))
@@ -168,16 +182,16 @@ def parse_fatura(pdf_path):
 
     # ── Energia Injetada FP — TE ─────────────────────────────────────────────
     m = re.search(
-        r'Energia Atv Injetada Fponta TE.*?kWh\s+([\d\.,]+)\s+([\d,]+)\s+([\d,]+)\s+([\d\.,\-]+)',
-        text
+        r'Energia Atv Injetada Fponta TE.*?kWh\s+([\d\.,]+)\s+([\d\.,]+)\s+([\d\.,]+)\s+([\d\.,\-]+)',
+        text, re.DOTALL
     )
     if m:
         r["valor_inj_fp_te"] = _num(m.group(4).replace('-', '').strip())
 
     # ── Energia Injetada Ponta — TE ──────────────────────────────────────────
     m = re.search(
-        r'Energia Atv Injetada Ponta TE.*?kWh\s+([\d\.,]+)\s+([\d,]+)\s+([\d,]+)\s+([\d\.,\-]+)',
-        text
+        r'Energia Atv Injetada Ponta TE.*?kWh\s+([\d\.,]+)\s+([\d\.,]+)\s+([\d\.,]+)\s+([\d\.,\-]+)',
+        text, re.DOTALL
     )
     if m:
         r["valor_inj_ponta_te"] = _num(m.group(4).replace('-', '').strip())
@@ -234,19 +248,19 @@ def parse_fatura(pdf_path):
         r["cosip"] = _num(m.group(1))
 
     # ── Tributos ──────────────────────────────────────────────────────────────
-    m = re.search(r'ICMS\s+([\d\.,]+)\s+([\d,]+)\s+([\d\.,]+)', text)
+    m = re.search(r'ICMS\s+([\d\.,]+)\s+([\d\.,]+)\s+([\d\.,]+)', text)
     if m:
         r["icms_base"]  = _num(m.group(1))
         r["icms_aliq"]  = _num(m.group(2))
         r["icms_valor"] = _num(m.group(3))
 
-    m = re.search(r'PIS/PASEP\s+([\d\.,]+)\s+([\d,]+)\s+([\d\.,]+)', text)
+    m = re.search(r'PIS/PASEP\s+([\d\.,]+)\s+([\d\.,]+)\s+([\d\.,]+)', text)
     if m:
         r["pis_base"]  = _num(m.group(1))
         r["pis_aliq"]  = _num(m.group(2))
         r["pis_valor"] = _num(m.group(3))
 
-    m = re.search(r'COFINS\s+([\d\.,]+)\s+([\d,]+)\s+([\d\.,]+)', text)
+    m = re.search(r'COFINS\s+([\d\.,]+)\s+([\d\.,]+)\s+([\d\.,]+)', text)
     if m:
         r["cofins_base"]  = _num(m.group(1))
         r["cofins_aliq"]  = _num(m.group(2))
