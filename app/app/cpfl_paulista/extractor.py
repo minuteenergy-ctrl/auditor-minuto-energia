@@ -33,21 +33,7 @@ def parse_fatura(pdf_path):
     with pdfplumber.open(pdf_path) as pdf:
         text = "\n".join(p.extract_text() or "" for p in pdf.pages)
 
-    # ── DEBUG TEMPORÁRIO — remover após diagnóstico ───────────────────────────
-    import sys as _sys, pdfplumber as _pdf
-    print(f"[DBG] pdfplumber={_pdf.__version__}", file=_sys.stderr, flush=True)
-    for _lbl, _pat in [("ICMS", "ICMS"), ("PIS", "PIS/PASEP"),
-                        ("INJ_TUSD", "Energia Atv Inj Fponta TUSD"),
-                        ("INJ_TE",   "Energia Atv Injetada Fponta TE"),
-                        ("PONTA",    r"Consumo Ponta \[KWh\]")]:
-        _m = re.search(_pat, text)
-        if _m:
-            print(f"[DBG {_lbl}] {repr(text[_m.start():_m.start()+200])}", file=_sys.stderr, flush=True)
-        else:
-            print(f"[DBG {_lbl}] NÃO ENCONTRADO", file=_sys.stderr, flush=True)
-    # ── FIM DEBUG ─────────────────────────────────────────────────────────────
-
-    r = {"arquivo": Path(pdf_path).name, "distribuidora": "CPFL Paulista"}
+    r ={"arquivo": Path(pdf_path).name, "distribuidora": "CPFL Paulista"}
 
     # ── Ref mês/ano + vencimento + total ─────────────────────────────────────
     m = re.search(
@@ -78,7 +64,7 @@ def parse_fatura(pdf_path):
         r["data_emissao"]   = _data(m.group(2))
 
     # ── Cliente ───────────────────────────────────────────────────────────────
-    m = re.search(r'\n(JOSE[\w\s]+(?:DE\s+)?[\w]+)\nEST MUN', text)
+    m = re.search(r'\n(JOSE[\w\s]*(?:DE\s+)?[\w]+)\nEST MUN', text)
     if m:
         r["cliente_nome"] = m.group(1).strip()
 
