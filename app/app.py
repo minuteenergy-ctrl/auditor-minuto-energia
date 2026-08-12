@@ -981,40 +981,41 @@ with tab_dash:
         border-left: 3px solid #C8E04A;
     }
     .dash-kpi {
-        background: #0A2540;
-        border-radius: 12px;
-        padding: 15px 18px 13px;
-        border: 1px solid #1E3A5F;
+        background: #0A2540 !important;
+        border-radius: 12px !important;
+        padding: 15px 18px 13px !important;
+        border: 1px solid #1E3A5F !important;
         position: relative;
         overflow: hidden;
         min-height: 94px;
         margin-bottom: 2px;
+        display: block !important;
     }
     .dash-kpi.amber { border-top: 3px solid #BA7517; }
     .dash-kpi.lime  { border-top: 3px solid #C8E04A; }
     .dash-kpi.blue  { border-top: 3px solid #1B5179; }
     .dash-kpi.green { border-top: 3px solid #5A9F37; }
     .dash-kpi .dk-lbl {
-        font-size: 10px;
-        font-family: 'Inter', sans-serif;
-        color: #8BA9C0;
+        font-size: 10px !important;
+        font-family: 'Inter', sans-serif !important;
+        color: #8BA9C0 !important;
         text-transform: uppercase;
         letter-spacing: 0.08em;
         margin-bottom: 5px;
     }
     .dash-kpi .dk-val {
-        font-family: 'Inter', sans-serif;
-        font-size: 21px;
-        font-weight: 600;
-        color: #FFFFFF;
+        font-family: 'Inter', sans-serif !important;
+        font-size: 21px !important;
+        font-weight: 600 !important;
+        color: #FFFFFF !important;
         font-feature-settings: "tnum";
         line-height: 1.15;
     }
     .dash-kpi .dk-delta {
-        font-family: 'Inter', sans-serif;
-        font-size: 11px;
+        font-family: 'Inter', sans-serif !important;
+        font-size: 11px !important;
         margin-top: 5px;
-        color: #8BA9C0;
+        color: #8BA9C0 !important;
         min-height: 16px;
     }
     .dash-kpi .dk-spark {
@@ -1022,6 +1023,10 @@ with tab_dash:
         right: 10px;
         bottom: 8px;
         opacity: 0.7;
+    }
+    /* Fix: containers Streamlit não devem ter fundo branco sobre os cards escuros */
+    [data-testid="stMarkdownContainer"] {
+        background: transparent !important;
     }
     </style>
     """, unsafe_allow_html=True)
