@@ -581,8 +581,12 @@ def _parse_danfe(text, tables, words=None):
             parts = [l.strip() for l in c.split("\n")]
             c1 = parts[0] if parts else ""
             c2 = parts[1] if len(parts) > 1 else ""
-            if re.match(r"^[\d.]+,\d+$", c1):
-                reading_med1.append(_num(c1))
+            # Aceita célula com prefixo curto (ex: '0 1,00000' → 1,00000)
+            # causado por pdfplumber unir colunas adjacentes.
+            # O prefixo permitido é: até 2 dígitos + espaço (nunca mais).
+            _m1 = re.match(r"^(?:\d{1,2}\s+)?([\d.]+,\d+)\s*$", c1)
+            if _m1:
+                reading_med1.append(_num(_m1.group(1)))
             if c2 and re.match(r"^[\d.]+,\d+$", c2):
                 reading_med2.append(_num(c2))
             elif "CONSUMO" in c1.upper():
