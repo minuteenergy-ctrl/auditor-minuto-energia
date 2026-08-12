@@ -472,6 +472,66 @@ button[data-testid="stBaseButton-secondary"]:hover {
     color: #C8E04A !important;
     opacity: 0.9;
 }
+
+/* ── Dashboard dark cards ─────────────────────────────────────────────── */
+.dash-section-title {
+    font-family: 'Poppins', sans-serif;
+    font-size: 12px;
+    font-weight: 600;
+    color: #C8E04A;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    margin: 6px 0 14px 0;
+    padding-left: 10px;
+    border-left: 3px solid #C8E04A;
+}
+.dash-kpi {
+    background: #0A2540 !important;
+    border-radius: 12px !important;
+    padding: 15px 18px 13px !important;
+    border: 1px solid #1E3A5F !important;
+    position: relative;
+    overflow: hidden;
+    min-height: 94px;
+    margin-bottom: 2px;
+    display: block !important;
+}
+.dash-kpi.amber { border-top: 3px solid #BA7517 !important; }
+.dash-kpi.lime  { border-top: 3px solid #C8E04A !important; }
+.dash-kpi.blue  { border-top: 3px solid #1B5179 !important; }
+.dash-kpi.green { border-top: 3px solid #5A9F37 !important; }
+.dash-kpi .dk-lbl {
+    font-size: 10px !important;
+    font-family: 'Inter', sans-serif !important;
+    color: #8BA9C0 !important;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    margin-bottom: 5px;
+}
+.dash-kpi .dk-val {
+    font-family: 'Inter', sans-serif !important;
+    font-size: 21px !important;
+    font-weight: 600 !important;
+    color: #FFFFFF !important;
+    font-feature-settings: "tnum";
+    line-height: 1.15;
+}
+.dash-kpi .dk-delta {
+    font-family: 'Inter', sans-serif !important;
+    font-size: 11px !important;
+    margin-top: 5px;
+    color: #8BA9C0 !important;
+    min-height: 16px;
+}
+.dash-kpi .dk-spark {
+    position: absolute;
+    right: 10px;
+    bottom: 8px;
+    opacity: 0.7;
+}
+[data-testid="stMarkdownContainer"] {
+    background: transparent !important;
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -964,72 +1024,6 @@ with tab_dash:
         if name in df.columns:
             return pd.to_numeric(df[name], errors="coerce").fillna(0)
         return pd.Series([0] * len(df), index=df.index)
-
-    # ── CSS dark dashboard ────────────────────────────────────────────────────
-    st.markdown("""
-    <style>
-    /* ── Dashboard dark cards ─────────────────────────────────────────────── */
-    .dash-section-title {
-        font-family: 'Poppins', sans-serif;
-        font-size: 12px;
-        font-weight: 600;
-        color: #C8E04A;
-        letter-spacing: 0.08em;
-        text-transform: uppercase;
-        margin: 6px 0 14px 0;
-        padding-left: 10px;
-        border-left: 3px solid #C8E04A;
-    }
-    .dash-kpi {
-        background: #0A2540 !important;
-        border-radius: 12px !important;
-        padding: 15px 18px 13px !important;
-        border: 1px solid #1E3A5F !important;
-        position: relative;
-        overflow: hidden;
-        min-height: 94px;
-        margin-bottom: 2px;
-        display: block !important;
-    }
-    .dash-kpi.amber { border-top: 3px solid #BA7517; }
-    .dash-kpi.lime  { border-top: 3px solid #C8E04A; }
-    .dash-kpi.blue  { border-top: 3px solid #1B5179; }
-    .dash-kpi.green { border-top: 3px solid #5A9F37; }
-    .dash-kpi .dk-lbl {
-        font-size: 10px !important;
-        font-family: 'Inter', sans-serif !important;
-        color: #8BA9C0 !important;
-        text-transform: uppercase;
-        letter-spacing: 0.08em;
-        margin-bottom: 5px;
-    }
-    .dash-kpi .dk-val {
-        font-family: 'Inter', sans-serif !important;
-        font-size: 21px !important;
-        font-weight: 600 !important;
-        color: #FFFFFF !important;
-        font-feature-settings: "tnum";
-        line-height: 1.15;
-    }
-    .dash-kpi .dk-delta {
-        font-family: 'Inter', sans-serif !important;
-        font-size: 11px !important;
-        margin-top: 5px;
-        color: #8BA9C0 !important;
-        min-height: 16px;
-    }
-    .dash-kpi .dk-spark {
-        position: absolute;
-        right: 10px;
-        bottom: 8px;
-        opacity: 0.7;
-    }
-    /* Fix: containers Streamlit não devem ter fundo branco sobre os cards escuros */
-    [data-testid="stMarkdownContainer"] {
-        background: transparent !important;
-    }
-    </style>
-    """, unsafe_allow_html=True)
 
     _regs_dash = st.session_state.get("registros_acumulados", [])
 
