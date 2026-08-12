@@ -413,7 +413,7 @@ def _parse_danfe(text, tables, words=None):
         if m: d["bandeira_cor"] = m.group(1).upper()
     # Captura TODAS as linhas de bandeira (pode haver 2 quando o ciclo cruza troca de bandeira)
     # Cobre: "Acrés. Band. AMARELA", "Acrés.Bd.VERMELHA-P2", "Acréscimo Bandeira VERDE", etc.
-    band_vals = re.findall(r"Acr[eé]s\.?\s*(?:Band|Bd)\.?\s*\S+\s+([\d,]+)", text)
+    band_vals = re.findall(r"Acr[eé]s\.?\s*(?:Band|Bd)\.?\s*\S+\s+([\d.,]+)", text)
     d["valor_bandeira"] = round(sum(_num(v) or 0 for v in band_vals), 2) if band_vals else 0
 
     # ── COSIP / ICMS-CDE via texto (SEMPRE sobrescreve) ──────────────────
@@ -451,13 +451,62 @@ def _parse_danfe(text, tables, words=None):
         d["valor_ipca"] = round(sum(_num(v) or 0 for v in ipca_vals), 2)
 
     # ── SCEE / Compensacao — Imp.Som/Dim ─────────────────────────────────
-    m = re.search(r"Imp\.Som/Dim-C/Impost\s+([\d,]+)-", text)
+    m = re.search(r"Imp\.Som/Dim-C/Impost\s+([\d.,]+)(-?)", text)
     if m:
-        d["valor_imp_som_dim_c"] = -round(_num(m.group(1)) or 0, 2)
-    m = re.search(r"Imp\.Som/Dim-S/Impost\s+([\d,]+)(-?)", text)
+        v = _num(m.group(1)) or 0
+        d["valor_imp_som_dim_c"] = -v if m.group(2) == "-" else v
+    m = re.search(r"Imp\.Som/Dim-S/Impost\s+([\d.,]+)(-?)", text)
     if m:
         v = _num(m.group(1)) or 0
         d["valor_imp_som_dim_s"] = -v if m.group(2) == "-" else v
+
+    # ── Comp. indicadores de qualidade (DIC, DMIC, FIC, DICRI, DEC) ──────
+    comp_ind_vals = []
+    # Non-greedy [^\n]+? stops at the FIRST Brazilian currency value on the line.
+    # No end-of-line anchor — trailing fields (código, leitura…) follow the value.
+    for ms, sign in re.findall(
+        r"Comp\.(?:DIC|DMIC|FIC|DICRI|DEC)\b[^\n]+?(\d{1,3}(?:\.\d{3})*,\d{2})(-?)",
+        text
+    ):
+        comp_ind_vals.append((_num(ms) or 0) * (-1 if sign == "-" else 1))
+    if comp_ind_vals:
+        d["valor_comp_indicadores"] = round(sum(comp_ind_vals), 2)
+
+    # ── Outros itens nao mapeados (varredura na secao ITENS DA FATURA) ────
+    _secao_m = re.search(
+        r"ITENS\s+DA\s+FATURA\b.+?(?=\bTOTAL\s+[\d.,]+|\bMEDIDOR\s+GRANDEZAS\b)",
+        text, re.DOTALL | re.IGNORECASE
+    )
+    if _secao_m:
+        _MAPEADOS = re.compile(
+            r"Consumo-(?:TUSD|TE)|Acr[eé]s\.?\s*(?:Band|Bd)|"
+            r"Ilum\.?\s*P[úu]b|ICMS-CDE|Parc\d|Imp\.Som/Dim|"
+            r"Comp\.(?:DIC|DMIC|FIC|DICRI|DEC)|Segunda\s+Via|"
+            r"Juros-NF|Multa-NF|IPCA-NF|Relig|"
+            r"(?:Juros|IPCA|Pla\.)COSIP|Devolu|"
+            r"ITENS\s+DA\s+FATURA|UNID\.|QUANT\.|PRECO|TARIFA|TRIBUTO|"
+            r"PIS|COFINS|ICMS|BASE\s+(?:CALC|DE)|ALIQUOTA|CONSUMO",
+            re.IGNORECASE
+        )
+        _outros_nao_mapeados = []
+        for line in _secao_m.group(0).split("\n"):
+            ls = line.strip()
+            if not ls or len(ls) < 4:
+                continue
+            if _MAPEADOS.search(ls):
+                continue
+            if not re.match(r"^[A-Za-zÀ-ú]", ls):
+                continue
+            mo = re.search(r"([\d.]+,\d{2})(-?)\s*$", ls)
+            if mo:
+                val = (_num(mo.group(1)) or 0) * (-1 if mo.group(2) else 1)
+                if val != 0:
+                    _outros_nao_mapeados.append((ls[:50], val))
+        if _outros_nao_mapeados:
+            d["valor_outros_itens"] = round(sum(v for _, v in _outros_nao_mapeados), 2)
+            d["outros_itens_desc"] = " | ".join(
+                f"{n.split()[0]}({v:+.2f})" for n, v in _outros_nao_mapeados
+            )
 
     # ── SCEE: kWh compensados (campo Informacoes Importantes) ────────────
     m = re.search(r"utilizados na unidade:\s*([\d,]+)\s*kWh", text, re.IGNORECASE)
