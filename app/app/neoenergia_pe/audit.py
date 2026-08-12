@@ -932,6 +932,8 @@ def auditar(r):
         r.get("valor_juros_nf") or 0,
         r.get("valor_encargos_cosip") or 0,
         r.get("valor_devolucao_credito") or 0,  # negativo
+        r.get("valor_comp_indicadores") or 0,   # Comp.DIC/DMIC/FIC/DICRI/DEC
+        r.get("valor_outros_itens") or 0,       # itens nao mapeados (varredura)
     ]
     soma = sum(v for v in itens if v is not None)
     metricas["soma_itens_R$"] = round(soma, 2)
@@ -941,17 +943,19 @@ def auditar(r):
         metricas["dif_total_R$"] = round(dif_total, 2)
         metricas["dif_total_%"]  = round(dif_pct * 100, 1)
 
+        _outros_desc = r.get("outros_itens_desc", "")
+        _sufixo = f" | outros_itens: {_outros_desc}" if _outros_desc else ""
         if dif_pct > TOL_SOMA_INV:
             flags_div.append(
                 f"soma itens R${soma:.2f} != total R${total:.2f} "
                 f"(dif={dif_total:+.2f}, {dif_pct*100:.0f}%) "
-                f"-- possivelmente ajuste/credito nao extraido"
+                f"-- possivelmente ajuste/credito nao extraido{_sufixo}"
             )
         elif dif_pct > TOL_SOMA_OK:
             flags_inv.append(
                 f"soma itens R${soma:.2f} != total R${total:.2f} "
                 f"(dif={dif_total:+.2f}, {dif_pct*100:.0f}%) "
-                f"-- possivel multa/juros nao extraidos"
+                f"-- possivel multa/juros nao extraidos{_sufixo}"
             )
     else:
         metricas["dif_total_R$"] = None
