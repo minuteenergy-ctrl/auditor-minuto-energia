@@ -888,31 +888,39 @@ def auditar(r):
                         )
 
     # 5c. SCEE -- auditoria da compensacao
+    # Neo BT usa Imp.Som/Dim-S (sem impostos) para o credito SCEE.
+    # A compensacao e calculada pelas tarifas SEM tributos (TUSD+TE sem PIS/COFINS/ICMS).
     if r.get("is_scee"):
-        scee_kwh  = r.get("scee_kwh_compensados") or 0
-        comp_c    = r.get("valor_imp_som_dim_c") or 0
-        preco_tot = (r.get("preco_tusd") or 0) + (r.get("preco_te") or 0)
+        scee_kwh = r.get("scee_kwh_compensados") or 0
+        # cobrado: Imp.Som/Dim-S (sem tributos); fallback para Imp.Som/Dim-C
+        comp_s   = r.get("valor_imp_som_dim_s") or 0
+        comp_c   = r.get("valor_imp_som_dim_c") or 0
+        comp_cob_raw = comp_s if comp_s != 0 else comp_c
+        # tarifa sem tributos para calculo auditado
+        tar_tusd = r.get("tarifa_tusd_sem_trib") or 0
+        tar_te   = r.get("tarifa_te_sem_trib")   or 0
+        preco_sem_t = tar_tusd + tar_te
         metricas["scee_kwh_compensados"] = scee_kwh
         metricas["is_scee"] = True
         if metricas.get("gdi_deducao_direta"):
-            metricas["gdi_comp_monetario_equiv_R$"] = round(scee_kwh * preco_tot, 2)
+            metricas["gdi_comp_monetario_equiv_R$"] = round(scee_kwh * preco_sem_t, 2)
         elif scee_kwh == 0:
             pass
-        elif scee_kwh and preco_tot:
-            comp_aud = round(scee_kwh * preco_tot, 2)
-            comp_cob = round(abs(comp_c), 2)
+        elif scee_kwh and preco_sem_t:
+            comp_aud = round(scee_kwh * preco_sem_t, 2)
+            comp_cob = round(abs(comp_cob_raw), 2)
             dif_scee = abs(comp_aud - comp_cob)
             metricas["comp_scee_auditado_R$"] = comp_aud
             metricas["comp_scee_cobrado_R$"]  = comp_cob
             metricas["dif_scee_R$"]           = round(dif_scee, 2)
             if dif_scee > TOL_ITEM:
                 flags_inv.append(
-                    f"SCEE: {scee_kwh}kWh x R${preco_tot:.6f}/kWh "
+                    f"SCEE: {scee_kwh}kWh x R${preco_sem_t:.6f}/kWh (sem trib) "
                     f"= R${comp_aud:.2f} auditado vs R${comp_cob:.2f} cobrado "
                     f"(dif=R${dif_scee:.2f})"
                 )
         else:
-            flags_inv.append("SCEE: kWh compensados presentes mas preco_tusd/preco_te ausentes")
+            flags_inv.append("SCEE: kWh compensados presentes mas tarifas sem tributos ausentes")
 
     # 6. Soma dos itens vs total da fatura
     total = r.get("total_fatura")
