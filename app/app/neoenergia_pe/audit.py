@@ -247,7 +247,7 @@ def _tol_reh(cobrado, esperado, tol=0.0005):
 
 TOL_ITEM      = 0.10
 TOL_ICMS      = 0.10
-TOL_LEIT      = 2
+TOL_LEIT      = 0
 TOL_SOMA_OK   = 0.10
 TOL_SOMA_INV  = 0.30
 
@@ -785,7 +785,7 @@ def auditar(r):
                         if "trifasico" in _tipo:
                             _minimo = 100
                         elif "bifasico" in _tipo:
-                            _minimo = 30 if ("dois" in _tipo or "2 " in _tipo) else 50
+                            _minimo = 50
                         elif "monofasico" in _tipo:
                             _minimo = 30
                         else:
