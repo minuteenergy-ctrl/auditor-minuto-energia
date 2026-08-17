@@ -472,6 +472,66 @@ button[data-testid="stBaseButton-secondary"]:hover {
     color: #C8E04A !important;
     opacity: 0.9;
 }
+
+/* ── Dashboard dark cards ─────────────────────────────────────────────── */
+.dash-section-title {
+    font-family: 'Poppins', sans-serif;
+    font-size: 12px;
+    font-weight: 600;
+    color: #C8E04A;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    margin: 6px 0 14px 0;
+    padding-left: 10px;
+    border-left: 3px solid #C8E04A;
+}
+.dash-kpi {
+    background: #0A2540 !important;
+    border-radius: 12px !important;
+    padding: 15px 18px 13px !important;
+    border: 1px solid #1E3A5F !important;
+    position: relative;
+    overflow: hidden;
+    min-height: 94px;
+    margin-bottom: 2px;
+    display: block !important;
+}
+.dash-kpi.amber { border-top: 3px solid #BA7517 !important; }
+.dash-kpi.lime  { border-top: 3px solid #C8E04A !important; }
+.dash-kpi.blue  { border-top: 3px solid #1B5179 !important; }
+.dash-kpi.green { border-top: 3px solid #5A9F37 !important; }
+.dash-kpi .dk-lbl {
+    font-size: 10px !important;
+    font-family: 'Inter', sans-serif !important;
+    color: #8BA9C0 !important;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    margin-bottom: 5px;
+}
+.dash-kpi .dk-val {
+    font-family: 'Inter', sans-serif !important;
+    font-size: 21px !important;
+    font-weight: 600 !important;
+    color: #FFFFFF !important;
+    font-feature-settings: "tnum";
+    line-height: 1.15;
+}
+.dash-kpi .dk-delta {
+    font-family: 'Inter', sans-serif !important;
+    font-size: 11px !important;
+    margin-top: 5px;
+    color: #8BA9C0 !important;
+    min-height: 16px;
+}
+.dash-kpi .dk-spark {
+    position: absolute;
+    right: 10px;
+    bottom: 8px;
+    opacity: 0.7;
+}
+[data-testid="stMarkdownContainer"] {
+    background: transparent !important;
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -969,13 +1029,13 @@ with tab_dash:
 
     if not _regs_dash:
         st.markdown("""
-        <div style="text-align:center; padding: 60px 0; color: #5A6B7C;">
-            <div style="font-size:48px; margin-bottom:16px;">📈</div>
-            <div style="font-family:'Poppins',sans-serif; font-size:16px; font-weight:500; color:#0A2540;">
+        <div style="text-align:center; padding:80px 0; background:#0A2540; border-radius:14px;">
+            <div style="font-size:52px; margin-bottom:18px;">📈</div>
+            <div style="font-family:'Poppins',sans-serif; font-size:17px; font-weight:600; color:#FFFFFF; margin-bottom:10px;">
                 Nenhuma fatura acumulada ainda
             </div>
-            <div style="font-size:13px; margin-top:8px;">
-                Processe faturas na aba <strong>Processar faturas</strong> para ver o dashboard.
+            <div style="font-size:13px; color:#8BA9C0;">
+                Processe faturas na aba <strong style="color:#C8E04A;">Processar faturas</strong> para ver o dashboard.
             </div>
         </div>
         """, unsafe_allow_html=True)
@@ -988,250 +1048,482 @@ with tab_dash:
         _df = _df.sort_values("_data")
         _df["_label"] = _df["_data"].dt.strftime("%m/%Y")
 
-        # ── VISÃO GERAL ───────────────────────────────────────────────────────
-        st.markdown("### Visão Geral")
-        st.markdown("---")
+        # ── Helpers visuais ───────────────────────────────────────────────────
+        def _spark(values, color="#C8E04A", w=88, h=28):
+            """Gera sparkline SVG inline a partir de lista de valores."""
+            vals = [float(v) for v in values if v is not None]
+            if len(vals) < 2:
+                return ""
+            mn, mx = min(vals), max(vals)
+            rng = mx - mn if mx != mn else 1
+            pts = []
+            n = len(vals)
+            for i, v in enumerate(vals):
+                x = i * w / (n - 1)
+                y = h - 2 - (v - mn) / rng * (h - 4)
+                pts.append(f"{x:.1f},{y:.1f}")
+            poly = " ".join(pts)
+            return (
+                f'<svg width="{w}" height="{h}" viewBox="0 0 {w} {h}" '
+                f'xmlns="http://www.w3.org/2000/svg">'
+                f'<polyline points="{poly}" fill="none" stroke="{color}" '
+                f'stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/></svg>'
+            )
 
+        def _delta_html(vals, invert=False):
+            """Seta + % vs período anterior."""
+            if len(vals) < 2 or vals[-2] == 0:
+                return ""
+            pct = (vals[-1] - vals[-2]) / abs(vals[-2]) * 100
+            clr = ("#E05A5A" if pct > 0 else "#5A9F37") if invert else ("#5A9F37" if pct > 0 else "#E05A5A")
+            arrow = "▲" if pct > 0 else "▼"
+            return f'<span style="color:{clr};">{arrow} {abs(pct):.1f}% vs anterior</span>'
+
+        # ── Constantes de tema dark ───────────────────────────────────────────
+        _DBG = "#0D1B2A"    # paper bg
+        _DCG = "#112233"    # plot bg
+        _GRD = "#1E3A5F"    # grid
+        _TXT = "#FFFFFF"
+        _LBL = "#8BA9C0"
+        _FF  = "Inter, sans-serif"
+        _FFT = "Poppins, sans-serif"
+
+        def _dl(title="", height=290, margin=None, showlegend=True, **kw):
+            """Layout base dark para Plotly."""
+            m = margin or dict(t=52, r=18, l=58, b=38)
+            d = dict(
+                paper_bgcolor=_DBG, plot_bgcolor=_DCG,
+                font=dict(family=_FF, color=_TXT, size=12),
+                title_text=title,
+                title_font=dict(family=_FFT, color=_TXT, size=13),
+                height=height, margin=m, showlegend=showlegend,
+                legend=dict(font=dict(color=_LBL, size=11),
+                            bgcolor="rgba(0,0,0,0)",
+                            orientation="h", y=1.12, x=0),
+                xaxis=dict(gridcolor=_GRD, linecolor=_GRD,
+                           tickfont=dict(color=_LBL, size=11),
+                           showgrid=True, zeroline=False),
+                yaxis=dict(gridcolor=_GRD, linecolor=_GRD,
+                           tickfont=dict(color=_LBL, size=11),
+                           showgrid=True, zeroline=False),
+            )
+            d.update(kw)
+            return d
+
+        # ── Agregações globais ────────────────────────────────────────────────
         _total_gasto = _df["total_fatura"].sum()
         _val_rec     = _df["__dif_total__"].sum()
         _n_ucs       = _df["conta_uc"].nunique()
         _n_fat       = len(_df)
         _n_prob      = _df["__triagem__"].isin(["INVESTIGAR", "DIVERGENCIA"]).sum()
+        _pct_ok      = ((_n_fat - _n_prob) / _n_fat * 100) if _n_fat else 0
+
+        _order = (
+            _df.dropna(subset=["_data"])
+            .drop_duplicates("_label")
+            .sort_values("_data")["_label"]
+        )
+        _mensal_s = (
+            _df.dropna(subset=["_data"])
+            .groupby("_label", sort=False)["total_fatura"].sum()
+            .reindex(_order.values).fillna(0)
+        )
+        _mensal_rec_s = (
+            _df.dropna(subset=["_data"])
+            .groupby("_label", sort=False)["__dif_total__"].sum()
+            .reindex(_order.values).fillna(0)
+        )
+        _mensal_prob_s = (
+            _df[_df["__triagem__"].isin(["INVESTIGAR", "DIVERGENCIA"])]
+            .dropna(subset=["_data"])
+            .groupby("_label", sort=False).size()
+            .reindex(_order.values).fillna(0)
+        )
+        _vmen  = list(_mensal_s.values)
+        _vrec  = list(_mensal_rec_s.values)
+        _vprob = list(_mensal_prob_s.values)
+
+        # ── VISÃO GERAL ───────────────────────────────────────────────────────
+        st.markdown('<div class="dash-section-title">Visão Geral</div>', unsafe_allow_html=True)
 
         _g1, _g2, _g3, _g4 = st.columns(4)
-        _g1.markdown(f'<div class="me-metric"><div class="val">{_brl_d(_total_gasto)}</div><div class="lbl">Total gasto no período</div></div>', unsafe_allow_html=True)
-        _g2.markdown(f'<div class="me-metric div"><div class="val">{_brl_d(_val_rec)}</div><div class="lbl">Valor passível de recuperação</div></div>', unsafe_allow_html=True)
-        _g3.markdown(f'<div class="me-metric ok"><div class="val">{_n_ucs}</div><div class="lbl">Unidades consumidoras</div></div>', unsafe_allow_html=True)
-        _g4.markdown(f'<div class="me-metric {"div" if _n_prob else "ok"}"><div class="val">{_n_prob} / {_n_fat}</div><div class="lbl">Faturas com ocorrência</div></div>', unsafe_allow_html=True)
+        with _g1:
+            st.markdown(f"""
+            <div class="dash-kpi amber">
+              <div class="dk-lbl">Total Gasto no Período</div>
+              <div class="dk-val">{_brl_d(_total_gasto)}</div>
+              <div class="dk-delta">{_delta_html(_vmen, invert=True)}</div>
+              <div class="dk-spark">{_spark(_vmen, "#BA7517")}</div>
+            </div>""", unsafe_allow_html=True)
+        with _g2:
+            st.markdown(f"""
+            <div class="dash-kpi lime">
+              <div class="dk-lbl">Valor Passível de Recuperação</div>
+              <div class="dk-val">{_brl_d(_val_rec)}</div>
+              <div class="dk-delta">{_delta_html(_vrec)}</div>
+              <div class="dk-spark">{_spark(_vrec, "#C8E04A")}</div>
+            </div>""", unsafe_allow_html=True)
+        with _g3:
+            st.markdown(f"""
+            <div class="dash-kpi blue">
+              <div class="dk-lbl">Unidades Consumidoras</div>
+              <div class="dk-val">{_n_ucs}</div>
+              <div class="dk-delta"><span style="color:#8BA9C0;">{_n_fat} faturas processadas</span></div>
+            </div>""", unsafe_allow_html=True)
+        with _g4:
+            _ok_clr = "#5A9F37" if _n_prob == 0 else "#BA7517"
+            _prob_class = "green" if _n_prob == 0 else "amber"
+            _prob_delta = (_delta_html(_vprob, invert=True)
+                          or f'<span style="color:#5A9F37;">{_pct_ok:.0f}% em conformidade</span>')
+            st.markdown(f"""
+            <div class="dash-kpi {_prob_class}">
+              <div class="dk-lbl">Faturas com Ocorrência</div>
+              <div class="dk-val" style="color:{_ok_clr};">{_n_prob}<span style="font-size:13px;color:#8BA9C0;"> / {_n_fat}</span></div>
+              <div class="dk-delta">{_prob_delta}</div>
+              <div class="dk-spark">{_spark(_vprob, "#E05A5A")}</div>
+            </div>""", unsafe_allow_html=True)
 
-        st.markdown("")
+        st.markdown("<div style='height:20px'></div>", unsafe_allow_html=True)
 
         if _PLOTLY_DASH:
-            # Linha 1: gasto mensal + donut
+            # Linha 1: gasto mensal (área) + donut triagem
             _ga, _gb = st.columns([3, 1])
 
             with _ga:
-                _mensal = (
-                    _df.dropna(subset=["_data"])
-                    .groupby("_label")["total_fatura"].sum()
-                    .reset_index()
-                )
-                # manter ordem cronológica
-                _order = (
-                    _df.dropna(subset=["_data"])
-                    .drop_duplicates("_label")
-                    .sort_values("_data")[["_label"]]
-                )
-                _mensal = _order.merge(_mensal, on="_label", how="left")
-
-                _fig_men = _go.Figure(_go.Bar(
-                    x=_mensal["_label"], y=_mensal["total_fatura"],
-                    marker_color="#1B5179",
+                _mensal_df = _mensal_s.reset_index()
+                _mensal_df.columns = ["_label", "total_fatura"]
+                _fig_men = _go.Figure(_go.Scatter(
+                    x=_mensal_df["_label"], y=_mensal_df["total_fatura"],
+                    mode="lines+markers",
+                    line=dict(color="#C8E04A", width=2.5),
+                    marker=dict(size=7, color="#C8E04A",
+                                line=dict(color="#0A2540", width=2)),
+                    fill="tozeroy",
+                    fillcolor="rgba(200,224,74,0.10)",
                     hovertemplate="%{x}<br><b>R$ %{y:,.2f}</b><extra></extra>",
                 ))
                 _fig_men.update_layout(
-                    title="Gasto Total Mensal — todas as UCs",
-                    xaxis_title=None, yaxis_title="R$",
-                    plot_bgcolor="#FAFBF8", paper_bgcolor="#FAFBF8",
-                    height=310, margin=dict(t=45, r=15, l=60, b=35),
-                    showlegend=False,
+                    **_dl("Gasto Total Mensal — todas as UCs",
+                          height=300, showlegend=False),
+                    yaxis_title="R$",
                 )
                 st.plotly_chart(_fig_men, use_container_width=True)
 
             with _gb:
-                _t_cnt  = _df["__triagem__"].value_counts()
-                _t_clr  = {"OK": "#5A9F37", "INVESTIGAR": "#1B5179", "DIVERGENCIA": "#BA7517"}
+                _t_cnt = _df["__triagem__"].value_counts()
+                _t_clr = {"OK": "#5A9F37", "INVESTIGAR": "#1B5179",
+                          "DIVERGENCIA": "#BA7517"}
                 _fig_do = _go.Figure(_go.Pie(
                     labels=list(_t_cnt.index), values=list(_t_cnt.values),
-                    hole=0.55,
-                    marker=dict(colors=[_t_clr.get(l, "#9AA8B7") for l in _t_cnt.index]),
-                    textinfo="percent+label",
+                    hole=0.60,
+                    marker=dict(
+                        colors=[_t_clr.get(l, "#9AA8B7") for l in _t_cnt.index],
+                        line=dict(color=_DBG, width=3),
+                    ),
+                    textinfo="percent",
+                    textfont=dict(color=_TXT, size=11),
                     hovertemplate="%{label}: %{value} faturas<extra></extra>",
                 ))
                 _fig_do.update_layout(
-                    title="Triagem",
-                    height=310, margin=dict(t=45, r=5, l=5, b=5),
-                    paper_bgcolor="#FAFBF8", showlegend=False,
+                    paper_bgcolor=_DBG,
+                    title_text="Triagem",
+                    title_font=dict(family=_FFT, color=_TXT, size=13),
+                    font=dict(family=_FF, color=_TXT),
+                    height=300,
+                    margin=dict(t=52, r=8, l=8, b=40),
+                    showlegend=True,
+                    legend=dict(font=dict(color=_LBL, size=10),
+                                bgcolor="rgba(0,0,0,0)",
+                                orientation="v", x=0.02, y=0.5),
+                    annotations=[dict(
+                        text=f"<b>{_pct_ok:.0f}%</b><br>ok",
+                        x=0.5, y=0.5,
+                        font=dict(size=16, color=_TXT, family=_FFT),
+                        showarrow=False,
+                    )],
                 )
                 st.plotly_chart(_fig_do, use_container_width=True)
 
             # Linha 2: ranking por UC
             _uc_rank = (
                 _df.groupby("conta_uc")
-                .agg(total=("total_fatura", "sum"), recuperavel=("__dif_total__", "sum"))
+                .agg(total=("total_fatura", "sum"),
+                     recuperavel=("__dif_total__", "sum"))
                 .reset_index()
                 .sort_values("total", ascending=True)
             )
             _fig_uc = _go.Figure()
             _fig_uc.add_trace(_go.Bar(
                 y=_uc_rank["conta_uc"], x=_uc_rank["total"],
-                orientation="h", name="Total gasto", marker_color="#1B5179",
+                orientation="h", name="Total gasto",
+                marker_color="#1B5179",
                 hovertemplate="UC %{y}<br>Total: R$ %{x:,.2f}<extra></extra>",
             ))
             _fig_uc.add_trace(_go.Bar(
                 y=_uc_rank["conta_uc"], x=_uc_rank["recuperavel"],
-                orientation="h", name="Recuperável", marker_color="#BA7517",
+                orientation="h", name="Recuperável",
+                marker_color="#BA7517",
                 hovertemplate="UC %{y}<br>Recuperável: R$ %{x:,.2f}<extra></extra>",
             ))
             _fig_uc.update_layout(
-                title="Gasto Total e Valor Recuperável por UC",
-                barmode="overlay", xaxis_title="R$", yaxis_title=None,
-                plot_bgcolor="#FAFBF8", paper_bgcolor="#FAFBF8",
-                height=max(200, len(_uc_rank) * 50 + 80),
-                margin=dict(t=45, r=15, l=90, b=35),
-                legend=dict(orientation="h", y=1.12, x=0),
+                **_dl("Gasto Total e Valor Recuperável por UC",
+                      height=max(220, len(_uc_rank) * 52 + 90),
+                      margin=dict(t=52, r=18, l=95, b=38),
+                      barmode="overlay"),
+                xaxis_title="R$",
             )
             st.plotly_chart(_fig_uc, use_container_width=True)
 
         # ── POR UC ────────────────────────────────────────────────────────────
-        st.markdown("---")
-        st.markdown("### Por Unidade Consumidora")
+        st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
+        st.markdown('<div class="dash-section-title">Por Unidade Consumidora</div>',
+                    unsafe_allow_html=True)
 
-        _ucs_d = sorted(_df["conta_uc"].dropna().astype(str).unique())
+        _ucs_d    = sorted(_df["conta_uc"].dropna().astype(str).unique())
         _uc_sel_d = st.selectbox("Selecionar UC", _ucs_d, key="dash_uc")
-        _dfu = _df[_df["conta_uc"].astype(str) == _uc_sel_d].copy()
+        _dfu      = _df[_df["conta_uc"].astype(str) == _uc_sel_d].copy()
 
-        # KPIs UC
-        _uc_tot  = _dfu["total_fatura"].sum()
-        _uc_rec  = _dfu["__dif_total__"].sum()
-        _uc_kwh  = _dfu["consumo_kwh"].mean()
-        _uc_np   = _dfu["__triagem__"].isin(["INVESTIGAR", "DIVERGENCIA"]).sum()
-        _uc_nf   = len(_dfu)
+        _uc_tot   = _dfu["total_fatura"].sum()
+        _uc_rec   = _dfu["__dif_total__"].sum()
+        _uc_kwh   = _dfu["consumo_kwh"].mean()
+        _uc_np    = _dfu["__triagem__"].isin(["INVESTIGAR", "DIVERGENCIA"]).sum()
+        _uc_nf    = len(_dfu)
+        _uc_pctok = ((_uc_nf - _uc_np) / _uc_nf * 100) if _uc_nf else 0
+
+        _dfu_s    = _dfu.sort_values("_data")
+        _vuc_men  = list(_dfu_s["total_fatura"].values)
+        _vuc_rec  = list(_dfu_s["__dif_total__"].values)
+        _vuc_kwh  = list(_dfu_s["consumo_kwh"].values)
+        _vuc_prob = list(
+            _dfu_s["__triagem__"].isin(["INVESTIGAR", "DIVERGENCIA"])
+            .astype(int).values
+        )
 
         _u1, _u2, _u3, _u4 = st.columns(4)
-        _u1.markdown(f'<div class="me-metric"><div class="val">{_brl_d(_uc_tot)}</div><div class="lbl">Total gasto</div></div>', unsafe_allow_html=True)
-        _u2.markdown(f'<div class="me-metric div"><div class="val">{_brl_d(_uc_rec)}</div><div class="lbl">Valor recuperável</div></div>', unsafe_allow_html=True)
-        _u3.markdown(f'<div class="me-metric ok"><div class="val">{_uc_kwh:,.0f} kWh</div><div class="lbl">Consumo médio mensal</div></div>', unsafe_allow_html=True)
-        _u4.markdown(f'<div class="me-metric {"div" if _uc_np else "ok"}"><div class="val">{_uc_np}/{_uc_nf}</div><div class="lbl">Faturas com ocorrência</div></div>', unsafe_allow_html=True)
+        with _u1:
+            st.markdown(f"""
+            <div class="dash-kpi amber">
+              <div class="dk-lbl">Total Gasto</div>
+              <div class="dk-val">{_brl_d(_uc_tot)}</div>
+              <div class="dk-delta">{_delta_html(_vuc_men, invert=True)}</div>
+              <div class="dk-spark">{_spark(_vuc_men, "#BA7517")}</div>
+            </div>""", unsafe_allow_html=True)
+        with _u2:
+            st.markdown(f"""
+            <div class="dash-kpi lime">
+              <div class="dk-lbl">Valor Recuperável</div>
+              <div class="dk-val">{_brl_d(_uc_rec)}</div>
+              <div class="dk-delta">{_delta_html(_vuc_rec)}</div>
+              <div class="dk-spark">{_spark(_vuc_rec, "#C8E04A")}</div>
+            </div>""", unsafe_allow_html=True)
+        with _u3:
+            st.markdown(f"""
+            <div class="dash-kpi green">
+              <div class="dk-lbl">Consumo Médio Mensal</div>
+              <div class="dk-val">{_uc_kwh:,.0f}<span style="font-size:13px;color:#8BA9C0;"> kWh</span></div>
+              <div class="dk-delta">{_delta_html(_vuc_kwh, invert=True)}</div>
+              <div class="dk-spark">{_spark(_vuc_kwh, "#5A9F37")}</div>
+            </div>""", unsafe_allow_html=True)
+        with _u4:
+            _uc_ok_clr   = "#5A9F37" if _uc_np == 0 else "#BA7517"
+            _uc_prob_cls = "green" if _uc_np == 0 else "amber"
+            _uc_prob_dlt = (_delta_html(_vuc_prob, invert=True)
+                           or f'<span style="color:#5A9F37;">{_uc_pctok:.0f}% em conformidade</span>')
+            st.markdown(f"""
+            <div class="dash-kpi {_uc_prob_cls}">
+              <div class="dk-lbl">Faturas com Ocorrência</div>
+              <div class="dk-val" style="color:{_uc_ok_clr};">{_uc_np}<span style="font-size:13px;color:#8BA9C0;"> / {_uc_nf}</span></div>
+              <div class="dk-delta">{_uc_prob_dlt}</div>
+              <div class="dk-spark">{_spark(_vuc_prob, "#E05A5A")}</div>
+            </div>""", unsafe_allow_html=True)
 
-        st.markdown("")
+        st.markdown("<div style='height:20px'></div>", unsafe_allow_html=True)
 
         if _PLOTLY_DASH:
-            # Gasto mensal da UC (barras coloridas por triagem)
-            _triagem_colors = [
+            _dem_med_s  = _col(_dfu_s, "demanda_medida_kw")
+            _dem_cont_s = _col(_dfu_s, "demanda_contratada_kw")
+            _has_demand = _dem_med_s.sum() > 0 and _dem_cont_s.sum() > 0
+
+            # Gasto mensal colorido por triagem
+            _tri_clrs = [
                 "#BA7517" if t in ("INVESTIGAR", "DIVERGENCIA") else "#1B5179"
-                for t in _dfu["__triagem__"]
+                for t in _dfu_s["__triagem__"]
             ]
             _fig_fat = _go.Figure(_go.Bar(
-                x=_dfu["_label"], y=_dfu["total_fatura"],
-                marker_color=_triagem_colors,
+                x=_dfu_s["_label"], y=_dfu_s["total_fatura"],
+                marker_color=_tri_clrs,
                 hovertemplate="%{x}<br><b>R$ %{y:,.2f}</b><extra></extra>",
             ))
             _fig_fat.update_layout(
-                title=f"Evolução do Gasto Mensal — UC {_uc_sel_d}",
-                xaxis_title=None, yaxis_title="R$",
-                plot_bgcolor="#FAFBF8", paper_bgcolor="#FAFBF8",
-                height=290, margin=dict(t=45, r=15, l=60, b=35),
-                showlegend=False,
+                **_dl(f"Evolução do Gasto Mensal — UC {_uc_sel_d}",
+                      height=270, showlegend=False,
+                      margin=dict(t=52, r=18, l=58, b=38)),
+                yaxis_title="R$",
             )
-            st.plotly_chart(_fig_fat, use_container_width=True)
+
+            if _has_demand:
+                # Gauge de utilização de demanda + gasto side-by-side
+                _dem_pico  = _dem_med_s.max()
+                _dem_ctrt  = _dem_cont_s.iloc[-1]
+                _dem_pct   = (_dem_pico / _dem_ctrt * 100) if _dem_ctrt else 0
+                _dem_pct_c = min(_dem_pct, 150)
+                _g_clr = ("#5A9F37" if _dem_pct <= 100
+                          else "#BA7517" if _dem_pct <= 110
+                          else "#E05A5A")
+
+                _col_ga, _col_gb = st.columns([1, 2])
+                with _col_ga:
+                    _fig_gauge = _go.Figure(_go.Indicator(
+                        mode="gauge+number+delta",
+                        value=_dem_pct_c,
+                        number=dict(suffix="%",
+                                    font=dict(size=26, color=_TXT, family=_FF)),
+                        delta=dict(reference=100,
+                                   increasing=dict(color="#E05A5A"),
+                                   decreasing=dict(color="#5A9F37"),
+                                   font=dict(size=12)),
+                        gauge=dict(
+                            axis=dict(range=[0, 150],
+                                      tickcolor=_LBL,
+                                      tickfont=dict(color=_LBL, size=10),
+                                      nticks=6),
+                            bar=dict(color=_g_clr, thickness=0.22),
+                            bgcolor=_DCG, borderwidth=0,
+                            steps=[
+                                dict(range=[0, 95],   color="#0F2A10"),
+                                dict(range=[95, 110],  color="#2A1F00"),
+                                dict(range=[110, 150], color="#2A0A0A"),
+                            ],
+                            threshold=dict(
+                                line=dict(color="#FFFFFF", width=2),
+                                thickness=0.8, value=100,
+                            ),
+                        ),
+                        title=dict(
+                            text=(f"Utilização de Demanda<br>"
+                                  f"<span style='font-size:10px;color:{_LBL};'>"
+                                  f"Pico {_dem_pico:.1f} kW · "
+                                  f"Contrat. {_dem_ctrt:.0f} kW</span>"),
+                            font=dict(size=12, color=_TXT, family=_FFT),
+                        ),
+                    ))
+                    _fig_gauge.update_layout(
+                        paper_bgcolor=_DBG, height=270,
+                        margin=dict(t=62, r=18, l=18, b=18),
+                        font=dict(color=_TXT),
+                    )
+                    st.plotly_chart(_fig_gauge, use_container_width=True)
+
+                with _col_gb:
+                    st.plotly_chart(_fig_fat, use_container_width=True)
+            else:
+                st.plotly_chart(_fig_fat, use_container_width=True)
 
             _col_e, _col_f = st.columns(2)
 
             with _col_e:
-                # Consumo kWh — ponta vs FP se disponível, senão total
-                _kp  = _col(_dfu, "consumo_ponta_kwh")
-                _kfp = _col(_dfu, "consumo_fp_kwh")
+                _kp  = _col(_dfu_s, "consumo_ponta_kwh")
+                _kfp = _col(_dfu_s, "consumo_fp_kwh")
                 if _kp.sum() + _kfp.sum() > 0:
                     _fig_kwh = _go.Figure()
                     _fig_kwh.add_trace(_go.Bar(
-                        x=_dfu["_label"], y=_kp, name="Ponta", marker_color="#BA7517",
+                        x=_dfu_s["_label"], y=_kp, name="Ponta",
+                        marker_color="#BA7517",
                         hovertemplate="%{x}<br>Ponta: %{y:,.0f} kWh<extra></extra>",
                     ))
                     _fig_kwh.add_trace(_go.Bar(
-                        x=_dfu["_label"], y=_kfp, name="Fora Ponta", marker_color="#1B5179",
+                        x=_dfu_s["_label"], y=_kfp, name="Fora Ponta",
+                        marker_color="#1B5179",
                         hovertemplate="%{x}<br>F.Ponta: %{y:,.0f} kWh<extra></extra>",
                     ))
                     _fig_kwh.update_layout(
-                        title="Consumo kWh — Ponta vs Fora Ponta",
-                        barmode="stack", xaxis_title=None, yaxis_title="kWh",
-                        plot_bgcolor="#FAFBF8", paper_bgcolor="#FAFBF8",
-                        height=270, margin=dict(t=45, r=10, l=50, b=35),
-                        legend=dict(orientation="h", y=1.12, x=0),
+                        **_dl("Consumo kWh — Ponta vs Fora Ponta",
+                              height=260, barmode="stack",
+                              margin=dict(t=52, r=14, l=54, b=38)),
+                        yaxis_title="kWh",
                     )
                 else:
                     _fig_kwh = _go.Figure(_go.Bar(
-                        x=_dfu["_label"], y=_dfu["consumo_kwh"],
+                        x=_dfu_s["_label"], y=_dfu_s["consumo_kwh"],
                         marker_color="#1B5179",
                         hovertemplate="%{x}<br>%{y:,.0f} kWh<extra></extra>",
                     ))
                     _fig_kwh.update_layout(
-                        title="Consumo kWh", xaxis_title=None, yaxis_title="kWh",
-                        plot_bgcolor="#FAFBF8", paper_bgcolor="#FAFBF8",
-                        height=270, margin=dict(t=45, r=10, l=50, b=35),
-                        showlegend=False,
+                        **_dl("Consumo kWh", height=260, showlegend=False,
+                              margin=dict(t=52, r=14, l=54, b=38)),
+                        yaxis_title="kWh",
                     )
                 st.plotly_chart(_fig_kwh, use_container_width=True)
 
             with _col_f:
-                # Demanda medida vs contratada (MT) ou tributos (BT)
-                _dem_med  = _col(_dfu, "demanda_medida_kw")
-                _dem_cont = _col(_dfu, "demanda_contratada_kw")
+                _dem_med  = _col(_dfu_s, "demanda_medida_kw")
+                _dem_cont = _col(_dfu_s, "demanda_contratada_kw")
                 if _dem_med.sum() > 0:
                     _fig_dem = _go.Figure()
                     _fig_dem.add_trace(_go.Bar(
-                        x=_dfu["_label"], y=_dem_med,
+                        x=_dfu_s["_label"], y=_dem_med,
                         name="Medida", marker_color="#1B5179",
                         hovertemplate="%{x}<br>Medida: %{y:,.1f} kW<extra></extra>",
                     ))
                     if _dem_cont.sum() > 0:
                         _fig_dem.add_trace(_go.Scatter(
-                            x=_dfu["_label"], y=_dem_cont,
+                            x=_dfu_s["_label"], y=_dem_cont,
                             mode="lines+markers", name="Contratada",
-                            line=dict(color="#5A9F37", width=2, dash="dash"),
+                            line=dict(color="#C8E04A", width=2, dash="dash"),
+                            marker=dict(size=5, color="#C8E04A"),
                             hovertemplate="%{x}<br>Contratada: %{y:,.1f} kW<extra></extra>",
                         ))
                     _fig_dem.update_layout(
-                        title="Demanda kW — Medida vs Contratada",
-                        xaxis_title=None, yaxis_title="kW",
-                        plot_bgcolor="#FAFBF8", paper_bgcolor="#FAFBF8",
-                        height=270, margin=dict(t=45, r=10, l=50, b=35),
-                        legend=dict(orientation="h", y=1.12, x=0),
+                        **_dl("Demanda kW — Medida vs Contratada",
+                              height=260, margin=dict(t=52, r=14, l=54, b=38)),
+                        yaxis_title="kW",
                     )
                     st.plotly_chart(_fig_dem, use_container_width=True)
                 else:
-                    # Tributos por mês (BT)
-                    _icms = _col(_dfu, "icms_valor")
-                    _pis  = _col(_dfu, "pis_valor")
-                    _cof  = _col(_dfu, "cofins_valor")
+                    _icms = _col(_dfu_s, "icms_valor")
+                    _pis  = _col(_dfu_s, "pis_valor")
+                    _cof  = _col(_dfu_s, "cofins_valor")
                     _fig_trib = _go.Figure()
-                    _fig_trib.add_trace(_go.Bar(x=_dfu["_label"], y=_icms, name="ICMS",   marker_color="#0A2540"))
-                    _fig_trib.add_trace(_go.Bar(x=_dfu["_label"], y=_pis,  name="PIS",    marker_color="#1B5179"))
-                    _fig_trib.add_trace(_go.Bar(x=_dfu["_label"], y=_cof,  name="COFINS", marker_color="#5A9F37"))
+                    _fig_trib.add_trace(_go.Bar(
+                        x=_dfu_s["_label"], y=_icms, name="ICMS",
+                        marker_color="#0A2540"))
+                    _fig_trib.add_trace(_go.Bar(
+                        x=_dfu_s["_label"], y=_pis, name="PIS",
+                        marker_color="#1B5179"))
+                    _fig_trib.add_trace(_go.Bar(
+                        x=_dfu_s["_label"], y=_cof, name="COFINS",
+                        marker_color="#5A9F37"))
                     _fig_trib.update_layout(
-                        title="Tributos por Mês",
-                        barmode="stack", xaxis_title=None, yaxis_title="R$",
-                        plot_bgcolor="#FAFBF8", paper_bgcolor="#FAFBF8",
-                        height=270, margin=dict(t=45, r=10, l=50, b=35),
-                        legend=dict(orientation="h", y=1.12, x=0),
+                        **_dl("Tributos por Mês", height=260, barmode="stack",
+                              margin=dict(t=52, r=14, l=54, b=38)),
+                        yaxis_title="R$",
                     )
                     st.plotly_chart(_fig_trib, use_container_width=True)
 
             # Custos acessórios (reativo + USDG ultrap)
-            _rea_p  = _col(_dfu, "valor_reativo_exc_ponta")
-            _rea_fp = _col(_dfu, "valor_reativo_exc_fp")
-            _usdg_u = _col(_dfu, "valor_usdg_ultrap")
+            _rea_p  = _col(_dfu_s, "valor_reativo_exc_ponta")
+            _rea_fp = _col(_dfu_s, "valor_reativo_exc_fp")
+            _usdg_u = _col(_dfu_s, "valor_usdg_ultrap")
             _total_aces = _rea_p.sum() + _rea_fp.sum() + _usdg_u.sum()
             if _total_aces > 0:
                 _fig_aces = _go.Figure()
                 if (_rea_p + _rea_fp).sum() > 0:
                     _fig_aces.add_trace(_go.Bar(
-                        x=_dfu["_label"], y=(_rea_p + _rea_fp).values,
+                        x=_dfu_s["_label"], y=(_rea_p + _rea_fp).values,
                         name="Reativo Exc.", marker_color="#BA7517",
                         hovertemplate="%{x}<br>Reativo: R$ %{y:,.2f}<extra></extra>",
                     ))
                 if _usdg_u.sum() > 0:
                     _fig_aces.add_trace(_go.Bar(
-                        x=_dfu["_label"], y=_usdg_u.values,
+                        x=_dfu_s["_label"], y=_usdg_u.values,
                         name="USDG Ultrap.", marker_color="#0A2540",
                         hovertemplate="%{x}<br>USDG Ultrap: R$ %{y:,.2f}<extra></extra>",
                     ))
                 _fig_aces.update_layout(
-                    title="Custos Acessórios — Reativo Excedente + USDG Ultrapassagem",
-                    barmode="stack", xaxis_title=None, yaxis_title="R$",
-                    plot_bgcolor="#FAFBF8", paper_bgcolor="#FAFBF8",
-                    height=270, margin=dict(t=45, r=10, l=60, b=35),
-                    legend=dict(orientation="h", y=1.12, x=0),
+                    **_dl("Custos Acessórios — Reativo Excedente + USDG Ultrapassagem",
+                          height=260, barmode="stack",
+                          margin=dict(t=52, r=18, l=64, b=38)),
+                    yaxis_title="R$",
                 )
                 st.plotly_chart(_fig_aces, use_container_width=True)
 
@@ -1315,3 +1607,55 @@ with tab3:
                     )
                 except Exception as e:
                     st.error(f"Erro ao gerar relatório: {e}")
+
+        st.divider()
+
+        # ── Excel Mestre Acumulado ─────────────────────────────────────────────
+        st.markdown("#### 📊 Excel Mestre Acumulado")
+        st.caption("Gera um Excel consolidado com todas as faturas acumuladas nesta sessão.")
+
+        col_xls, _ = st.columns([2, 3])
+        with col_xls:
+            gerar_xls = st.button("📊 Gerar Excel Mestre Acumulado", type="secondary")
+
+        if gerar_xls:
+            import tempfile, os
+
+            def _is_mt_acum(r):
+                sub = str(r.get("subgrupo", "")).upper()
+                return sub.startswith("A") or r.get("layout") == "Verde-A4"
+
+            regs_mt_acum = [r for r in registros_acum if _is_mt_acum(r)]
+            regs_bt_acum = [r for r in registros_acum if not _is_mt_acum(r)]
+
+            nome_arquivo_xls = re.sub(r"[^\w\d\-_]", "_", cliente_val or "Acumulado")[:40]
+
+            with st.spinner("Gerando Excel..."):
+                try:
+                    xls_gerados = []
+                    with tempfile.TemporaryDirectory() as tmp:
+                        if regs_mt_acum:
+                            p_mt = Path(tmp) / f"MASTER_MT_Acumulado_{nome_arquivo_xls}.xlsx"
+                            gerar_excel_mestre(regs_mt_acum, p_mt, modelo="MT")
+                            xls_gerados.append(("MT", p_mt.read_bytes(),
+                                                f"MASTER_MT_Acumulado_{nome_arquivo_xls}.xlsx"))
+                        if regs_bt_acum:
+                            p_bt = Path(tmp) / f"MASTER_BT_Acumulado_{nome_arquivo_xls}.xlsx"
+                            gerar_excel_mestre(regs_bt_acum, p_bt, modelo="BT")
+                            xls_gerados.append(("BT", p_bt.read_bytes(),
+                                                f"MASTER_BT_Acumulado_{nome_arquivo_xls}.xlsx"))
+
+                    if xls_gerados:
+                        st.success(f"✅ Excel(s) gerado(s): {len(regs_mt_acum)} MT · {len(regs_bt_acum)} BT faturas")
+                        for tipo, xls_bytes, fname in xls_gerados:
+                            st.download_button(
+                                f"⬇️ Baixar Excel {tipo}",
+                                xls_bytes,
+                                file_name=fname,
+                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                key=f"dl_xls_acum_{tipo}",
+                            )
+                    else:
+                        st.warning("Nenhum registro para gerar Excel.")
+                except Exception as e:
+                    st.error(f"Erro ao gerar Excel: {e}")
