@@ -821,6 +821,14 @@ with tab1:
             registros_norm = [r["__registro__"] for r in resultados]
             registros_norm = aplicar_check_cosip(registros_norm)
 
+            # Preenche cliente_nome ausente com o nome digitado na sidebar
+            _nome_sidebar = st.session_state.get("cliente_nome", "").strip()
+            if _nome_sidebar:
+                registros_norm = [
+                    {**r, "cliente_nome": r.get("cliente_nome") or _nome_sidebar}
+                    for r in registros_norm
+                ]
+
             def _is_mt(r):
                 sub = str(r.get("subgrupo", "")).upper()
                 return sub.startswith("A") or r.get("layout") == "Verde-A4"
@@ -842,8 +850,8 @@ with tab1:
             # ── Acumular registros em session_state (deduplica por arquivo) ──
             acumulados = st.session_state.get("registros_acumulados", [])
             arquivos_existentes = {r.get("arquivo") for r in acumulados}
-            novos = [r["__registro__"] for r in resultados
-                     if r["__registro__"].get("arquivo") not in arquivos_existentes]
+            novos = [r for r in registros_norm
+                     if r.get("arquivo") not in arquivos_existentes]
             st.session_state["registros_acumulados"] = acumulados + novos
 
             st.session_state["last_run"] = {
