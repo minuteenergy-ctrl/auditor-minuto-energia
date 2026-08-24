@@ -433,8 +433,8 @@ def _parse_danfe(text, tables, words=None):
 
     # ── Parcelamento ──────────────────────────────────────────────────────
     if "valor_parcelamento" not in d:
-        m = re.search(r"Parc\d+/\d+\s+\S+\s+([\d.,]+)", text)
-        if m: d["valor_parcelamento"] = _num(m.group(1))
+        matches = re.findall(r"Parc\d+/\d+\s+\S+\s+([\d.,]+)", text)
+        if matches: d["valor_parcelamento"] = sum(_num(v) for v in matches)
 
     # ── Segunda Via Fatura ────────────────────────────────────────────────
     m = re.search(r"Segunda\s+Via\s+Fatura\s+([\d.,]+)", text, re.IGNORECASE)
