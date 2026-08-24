@@ -576,7 +576,7 @@ def _parse_danfe(text, tables, words=None):
     # ── medidor / leituras ────────────────────────────────────────────────
     for row in main_tbl:
         cells = [str(c) if c else "" for c in row]
-        if not cells or not re.match(r"^\d{7,}", cells[0].strip()): continue
+        if not cells or not re.match(r"^[A-Za-z]?\d{4,}", cells[0].strip()): continue
         # nr_medidor: apenas o primeiro (pode haver dois separados por \n)
         raw_med = cells[0].strip()
         d["nr_medidor"] = raw_med.split("\n")[0]
