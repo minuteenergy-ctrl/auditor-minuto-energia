@@ -75,8 +75,16 @@ def _parse_antigo(text, tables):
     m = re.search(r"Contrib\.?\s+Ilum\.?\s+P.blica\s+Municipal\s+([\d.,]+)", text)
     if m: d["cosip"] = _num(m.group(1))
 
-    m = re.search(r"ICMS Subven..o-CDE[^\n]+([\d.,]+)\s*$", text, re.MULTILINE)
+    m = re.search(r"ICMS Subven..o-CDE[^\n]+\s([\d.,]+)\s*$", text, re.MULTILINE)
     if m: d["icms_cde"] = _num(m.group(1))
+
+    # Serviço de Entrega (item avulso no layout antigo)
+    m = re.search(r"Servi.o de Entrega\s+([\d.,]+)", text)
+    if m: d["valor_outros_itens"] = d.get("valor_outros_itens", 0) + _num(m.group(1))
+
+    # Devolução / crédito (valor negativo — aparece como "valor-" no PDF)
+    m = re.search(r"Devolu..o\s+Pagamento[^\n]+\s([\d.,]+)-", text)
+    if m: d["valor_outros_itens"] = d.get("valor_outros_itens", 0) - _num(m.group(1))
 
     m = re.search(r"TOTAL DA FATURA\s+([\d.,]+)", text)
     if m: d["total_fatura"] = _num(m.group(1))
