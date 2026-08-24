@@ -143,7 +143,7 @@ def _parse_antigo(text, tables):
             cells = [str(c).strip() if c else "" for c in row]
             if any("CAT" in c for c in cells):
                 for c in cells:
-                    if re.match(r"^\d{7,10}$", c) and "nr_medidor" not in d:
+                    if re.match(r"^[A-Za-z]?\d{4,10}$", c) and "nr_medidor" not in d:
                         d["nr_medidor"] = c
                     elif re.match(r"^\d{2}/\d{2}/\d{4}$", c):
                         if "data_leitura_anterior" not in d: d["data_leitura_anterior"] = c
@@ -191,6 +191,11 @@ def _parse_antigo(text, tables):
     ipca_vals = re.findall(r"Atualizacao\s+IPCA-NF\s+\S+\s+-\s+[\d.]+\s+([\d.,]+)", text)
     if ipca_vals:
         d["valor_ipca"] = round(sum(_num(v) or 0 for v in ipca_vals), 2)
+
+    # Compensação DIC/DMIC/FIC (crédito negativo — aparece como "valor-" no PDF)
+    comp_vals = re.findall(r"Compensa..o\s+\w+[^\n]+\s([\d.,]+)-", text)
+    if comp_vals:
+        d["valor_comp_indicadores"] = -round(sum(_num(v) for v in comp_vals), 2)
 
     return d
 
