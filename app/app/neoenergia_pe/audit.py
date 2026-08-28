@@ -233,6 +233,70 @@ def _reh_mt_para_periodo(ref_mes_ano, subgrupo="A4", modalidade="Azul"):
     return _reh_para_lista(ref_mes_ano, tarifas.get("tarifas_mt", {}).get(chave, []))
 
 
+def _reh_mt_ponderado(data_lant_str, data_latu_str, lista_rehs):
+    """
+    Calcula tarifas MT A4 Verde ponderadas pelos dias sob cada REH no periodo de leitura.
+    Usa data_oficial (data ANEEL real) ou vigencia_inicio como inicio efetivo de cada REH.
+    Periodo de consumo: dia seguinte a leitura_anterior ate leitura_atual (inclusive).
+    Retorna dict {dem_kw, tusd_np_kwh, tusd_fp_kwh, te_np_kwh, te_fp_kwh, reh, ponderado}
+    ou None se datas invalidas.
+    """
+    try:
+        dt_ant = datetime.strptime(data_lant_str, "%d/%m/%Y")
+        dt_atu = datetime.strptime(data_latu_str, "%d/%m/%Y")
+    except (ValueError, TypeError):
+        return None
+
+    total_dias = (dt_atu - dt_ant).days
+    if total_dias <= 0:
+        return None
+
+    dt_ini = dt_ant + timedelta(days=1)   # primeiro dia de consumo
+
+    # Ordena REHs cronologicamente pelo inicio efetivo (data_oficial ou vigencia_inicio)
+    def _ini_efetivo(t):
+        s = t.get("data_oficial") or t["vigencia_inicio"]
+        return datetime.strptime(s, "%Y-%m-%d")
+
+    rehs_ord = sorted(lista_rehs, key=_ini_efetivo)
+
+    campos = ("dem_kw", "tusd_np_kwh", "tusd_fp_kwh", "te_np_kwh", "te_fp_kwh")
+    somas  = {k: 0.0 for k in campos}
+    mask   = {k: False for k in campos}   # True se alguma REH tem valor nao-nulo
+    reh_labels = []
+
+    for i, t in enumerate(rehs_ord):
+        ini = _ini_efetivo(t)
+
+        if i + 1 < len(rehs_ord):
+            fim_exc = _ini_efetivo(rehs_ord[i + 1])
+        else:
+            fim_exc = datetime(9999, 12, 31)
+
+        ov_ini = max(dt_ini, ini)
+        ov_fim = min(dt_atu + timedelta(days=1), fim_exc)
+
+        if ov_fim > ov_ini:
+            dias = (ov_fim - ov_ini).days
+            for k in campos:
+                v = t.get(k)
+                if v is not None:
+                    somas[k] += dias * v
+                    mask[k]   = True
+            reh_labels.append(f"{t['reh']} ({dias}d/{total_dias}d)")
+
+    if not reh_labels:
+        return None
+
+    result = {
+        k: round(somas[k] / total_dias, 8) if mask[k] else None
+        for k in campos
+    }
+    result["reh"]       = " + ".join(reh_labels)
+    result["ponderado"] = len(reh_labels) > 1
+    return result
+
+
 def _norm(s):
     """Remove acentos e coloca em lower para comparacoes de tipo_fornecimento."""
     return unicodedata.normalize("NFD", s.lower()).encode("ascii", "ignore").decode()
@@ -272,6 +336,20 @@ CAMPOS_SEC_MT = [
     "dem_contratada_fp_kw", "dem_contratada_np_kw",
     "tarifa_fio_np_sem", "tarifa_fio_fp_sem",
     "tarifa_encar_np_sem",
+    "icms_aliq",
+]
+
+CAMPOS_CRIT_MT_VERDE = [
+    "ref_mes_ano", "vencimento", "conta_contrato", "total_fatura",
+    "dem_contratada_kw", "dem_ativa_qtd_kw",
+    "valor_dem_ativa",
+    "consumo_tusd_np_kwh", "valor_tusd_np",
+    "consumo_tusd_fp_kwh", "valor_tusd_fp",
+]
+CAMPOS_SEC_MT_VERDE = [
+    "cod_instalacao", "data_emissao",
+    "tarifa_dem_sem", "tarifa_tusd_np_sem", "tarifa_tusd_fp_sem",
+    "tarifa_te_np_sem", "tarifa_te_fp_sem",
     "icms_aliq",
 ]
 
@@ -352,10 +430,361 @@ def _audit_leitura(lant, latu, cte, qtd_total, label, flags_inv, metricas, tol=T
     return calc
 
 
+# ─────────────────────────── AUDITORIA MT VERDE ──────────────────────────────
+
+def _auditar_mt_verde(r):
+    """Auditoria para faturas A4 Horo-sazonal Verde Neoenergia PE."""
+    flags_div = []
+    flags_inv = []
+    metricas  = {}
+
+    # 1. Campos criticos ausentes
+    faltam_crit = [c for c in CAMPOS_CRIT_MT_VERDE if r.get(c) is None]
+    faltam_sec  = [c for c in CAMPOS_SEC_MT_VERDE  if r.get(c) is None]
+    if faltam_crit:
+        flags_div.append(f"campos criticos ausentes: {', '.join(faltam_crit)}")
+    elif faltam_sec:
+        flags_inv.append(f"campos secundarios ausentes: {', '.join(faltam_sec)}")
+
+    # 1b. Periodo de leitura — RN 1000/2021 Art. 261
+    nr_dias = r.get("nr_dias")
+    if nr_dias is not None:
+        metricas["nr_dias"] = nr_dias
+        if nr_dias < 15 or nr_dias > 47:
+            flags_div.append(
+                f"periodo de faturamento: {nr_dias} dias fora do limite legal "
+                f"(RN 1000/2021 Art. 261: minimo 15, maximo 47 dias)"
+            )
+        elif nr_dias < 28 or nr_dias > 31:
+            flags_inv.append(
+                f"periodo de faturamento MT: {nr_dias} dias fora do mes civil "
+                f"(RN 1000/2021 Art. 261: normal = mes civil; 15-47 apenas em casos excepcionais)"
+            )
+
+    # 2. REH MT Verde — validacao de tarifas sem tributos
+    # Usa calculo ponderado (proporcional por dias) quando ha datas de leitura,
+    # exatamente como BT. Faturas ANTIGO MT sem datas caem no lookup por mes.
+    bandeira = (r.get("bandeira") or "").upper()
+    _tarifas_mt = _carregar_tarifas().get("tarifas_mt", {}).get("A4_Verde", [])
+    data_lant = r.get("data_leitura_anterior")
+    data_latu = r.get("data_leitura_atual")
+
+    if data_lant and data_latu:
+        reh_mt = _reh_mt_ponderado(data_lant, data_latu, _tarifas_mt)
+    else:
+        reh_mt = None
+
+    # Fallback: lookup por mes de referencia (ANTIGO MT ou ausencia de datas)
+    _reh_mt_lookup = _reh_mt_para_periodo(r.get("ref_mes_ano"), "A4", "Verde")
+    if reh_mt is None:
+        reh_mt = _reh_mt_lookup
+
+    if reh_mt is None:
+        flags_inv.append(
+            f"REH MT A4 Verde: nenhuma REH cadastrada para "
+            f"periodo {r.get('ref_mes_ano')} -- verificar manualmente"
+        )
+    else:
+        metricas["reh_mt"] = reh_mt.get("reh")
+
+        # Pré-calcula REH adjacentes (anterior e seguinte) para check de transicao
+        # Usado quando ANTIGO MT sem datas de leitura: tarifa entre REHs → INVESTIGAR
+        _sem_datas = not (data_lant and data_latu)
+        _rehs_chron = sorted(_tarifas_mt,
+                              key=lambda t: t.get("data_oficial") or t["vigencia_inicio"])
+        _reh_nome_atual = reh_mt.get("reh", "")
+        _idx_atual = next((i for i, t in enumerate(_rehs_chron)
+                           if t["reh"] == _reh_nome_atual), None)
+        _reh_prev = _rehs_chron[_idx_atual - 1] if (_idx_atual is not None and _idx_atual > 0) else None
+        _reh_next = _rehs_chron[_idx_atual + 1] if (_idx_atual is not None and _idx_atual + 1 < len(_rehs_chron)) else None
+
+        def _tarifa_entre_rehs(cobrado, chave):
+            """True se cobrado esta entre a REH atual e uma REH adjacente (transicao)."""
+            if cobrado is None:
+                return False
+            v_atual = reh_mt.get(chave)
+            if v_atual is None:
+                return False
+            for reh_adj in [_reh_prev, _reh_next]:
+                if reh_adj is None:
+                    continue
+                v_adj = reh_adj.get(chave)
+                if v_adj is None:
+                    continue
+                lo, hi = min(v_atual, v_adj), max(v_atual, v_adj)
+                if lo - 0.001 <= cobrado <= hi + 0.001:
+                    return True
+            return False
+
+        # Demanda e TUSD: nao afetados por bandeira
+        for nome, cobrado, esperado, chave_json, unidade in [
+            ("tarifa Demanda", r.get("tarifa_dem_sem"),     reh_mt.get("dem_kw"),      "dem_kw",      "R$/kW"),
+            ("tarifa TUSD NP", r.get("tarifa_tusd_np_sem"), reh_mt.get("tusd_np_kwh"), "tusd_np_kwh", "R$/kWh"),
+            ("tarifa TUSD FP", r.get("tarifa_tusd_fp_sem"), reh_mt.get("tusd_fp_kwh"), "tusd_fp_kwh", "R$/kWh"),
+        ]:
+            if cobrado is None:
+                flags_inv.append(f"REH MT {nome}: nao extraida -- verificar manualmente")
+                continue
+            if esperado is None:
+                continue
+            if _tol_reh(cobrado, esperado):
+                if _sem_datas and _tarifa_entre_rehs(cobrado, chave_json):
+                    # Sem datas de leitura, tarifa entre REHs adjacentes → possivel transicao
+                    flags_inv.append(
+                        f"REH MT {nome}: fatura={cobrado:.8f} vs "
+                        f"{reh_mt['reh']}={esperado:.8f} {unidade} "
+                        f"(dif={cobrado - esperado:+.8f}) -- possivel mes de transicao REH "
+                        f"sem datas de leitura para confirmar proporcionalidade"
+                    )
+                else:
+                    flags_div.append(
+                        f"REH MT {nome}: fatura={cobrado:.8f} vs "
+                        f"{reh_mt['reh']}={esperado:.8f} {unidade} "
+                        f"(dif={cobrado - esperado:+.8f})"
+                    )
+        # TE: inclui acrescimo de bandeira para bandeiras nao-verde
+        for nome, cobrado, esperado, unidade in [
+            ("tarifa TE NP", r.get("tarifa_te_np_sem"), reh_mt.get("te_np_kwh"), "R$/kWh"),
+            ("tarifa TE FP", r.get("tarifa_te_fp_sem"), reh_mt.get("te_fp_kwh"), "R$/kWh"),
+        ]:
+            if cobrado is None:
+                flags_inv.append(f"REH MT {nome}: nao extraida -- verificar manualmente")
+                continue
+            if esperado is None:
+                continue   # ex: REH 2.861/2021 te = null
+            surcharge = cobrado - esperado
+            if bandeira == "VERDE":
+                # Verde: surcharge deve ser zero
+                if _tol_reh(cobrado, esperado):
+                    chave_te = "te_np_kwh" if "NP" in nome else "te_fp_kwh"
+                    if _sem_datas and _tarifa_entre_rehs(cobrado, chave_te):
+                        flags_inv.append(
+                            f"REH MT {nome}: fatura={cobrado:.8f} vs "
+                            f"{reh_mt['reh']}={esperado:.8f} {unidade} "
+                            f"(dif={cobrado - esperado:+.8f}) -- possivel mes de transicao REH "
+                            f"sem datas de leitura para confirmar proporcionalidade"
+                        )
+                    else:
+                        flags_div.append(
+                            f"REH MT {nome}: fatura={cobrado:.8f} vs "
+                            f"{reh_mt['reh']}={esperado:.8f} {unidade} "
+                            f"(dif={cobrado - esperado:+.8f})"
+                        )
+            elif surcharge < -0.001:
+                # TE MENOR que base: divergencia independente de bandeira
+                flags_div.append(
+                    f"REH MT {nome} ({bandeira or 'bandeira?'}): fatura={cobrado:.8f} < "
+                    f"base {reh_mt['reh']}={esperado:.8f} {unidade} "
+                    f"(dif={cobrado - esperado:+.8f}) -- TE nao pode ser menor que base"
+                )
+            elif surcharge > 0.001:
+                # TE maior que base: acrescimo de bandeira (inclui caso bandeira nao detectada)
+                tag_banda = f" ({bandeira})" if bandeira else " (bandeira nao detectada)"
+                metricas[f"bandeira_{nome.split()[-1]}_R$/kWh"] = round(surcharge, 8)
+                if surcharge > 0:
+                    flags_inv.append(
+                        f"REH MT {nome}{tag_banda}: acrescimo de bandeira estimado="
+                        f"{surcharge:.8f} R$/kWh -- verificar tabela ANEEL vigente"
+                    )
+            # surcharge == 0 e bandeira nao-verde: AMARELA com surcharge zero (pos-2025) → OK
+
+    # 3. Math: qtd x preco_com = valor
+    for tag, key_qtd, key_preco, key_valor in [
+        ("Demanda", "dem_ativa_qtd_kw",    "preco_dem_com",    "valor_dem_ativa"),
+        ("TUSD NP", "consumo_tusd_np_kwh", "preco_tusd_np_com","valor_tusd_np"),
+        ("TUSD FP", "consumo_tusd_fp_kwh", "preco_tusd_fp_com","valor_tusd_fp"),
+        ("TE NP",   "consumo_te_np_kwh",   "preco_te_np_com",  "valor_te_np"),
+        ("TE FP",   "consumo_te_fp_kwh",   "preco_te_fp_com",  "valor_te_fp"),
+    ]:
+        qtd   = r.get(key_qtd)
+        preco = r.get(key_preco)
+        valor = r.get(key_valor)
+        if qtd is not None and preco is not None and valor is not None:
+            calc = round(qtd * preco, 2)
+            dif  = abs(calc - valor)
+            metricas[f"calc_{tag.replace(' ','_')}_R$"] = calc
+            if dif > TOL_ITEM:
+                flags_div.append(
+                    f"{tag} math: {qtd} x {preco} = {calc:.2f} != {valor:.2f} "
+                    f"(dif={dif:.2f})"
+                )
+
+    # 4. Consistencia: TUSD NP/FP vs consumo do demonstrativo
+    # Nota: a fatura aplica taxa de perda de transformacao (~2,5%) ao consumo medido.
+    # O demonstrativo mostra o consumo ANTES da perda. Diferenca <= 4% e normal (perda 2.5%).
+    # Apenas discrepancias acima de 4% indicam possivel problema de leitura/faturamento.
+    for key_tusd, key_dem, label in [
+        ("consumo_tusd_np_kwh", "consumo_ponta_kwh", "kWh NP (TUSD vs demonstrativo)"),
+        ("consumo_tusd_fp_kwh", "consumo_fp_kwh",    "kWh FP (TUSD vs demonstrativo)"),
+    ]:
+        v_tusd = r.get(key_tusd)
+        v_dem  = r.get(key_dem)
+        if v_tusd is not None and v_dem is not None and v_tusd > 1:
+            dif_pct = abs(v_tusd - v_dem) / v_tusd
+            if dif_pct > 0.04:   # >4%: excede perda normal de 2,5%
+                flags_inv.append(
+                    f"consumo {label}: item={v_tusd:.2f} vs demonstrativo={v_dem:.2f} "
+                    f"(dif={abs(v_tusd - v_dem):.2f} kWh, {dif_pct*100:.1f}%) "
+                    f"-- perda de transformacao esperada <= 2,5%"
+                )
+
+    # 5. Demanda Verde: faturada >= contratada; medida vs contratada (ultrapassagem)
+    dem_cont = r.get("dem_contratada_kw")
+    dem_fat  = r.get("dem_ativa_qtd_kw")
+    dem_np   = r.get("demanda_medida_np_kw")
+    dem_fp   = r.get("demanda_medida_fp_kw")
+    dem_max  = max(dem_np or 0.0, dem_fp or 0.0)
+
+    if dem_cont and dem_fat:
+        if dem_fat < dem_cont - 0.01:
+            flags_div.append(
+                f"demanda faturada: {dem_fat:.2f} kW < contratada {dem_cont:.0f} kW "
+                f"-- verificar faturamento minimo"
+            )
+        if dem_max and dem_max > dem_cont * 1.05:
+            pct = (dem_max - dem_cont) / dem_cont * 100
+            metricas["ultrap_verde_pct"] = round(pct, 1)
+            flags_inv.append(
+                f"demanda medida: max(NP={dem_np:.2f},FP={dem_fp:.2f})={dem_max:.2f} kW "
+                f"> contratada={dem_cont:.0f} kW ({pct:.1f}%) -- verificar ultrapassagem"
+            )
+
+    # 6. ICMS math
+    icms_b    = r.get("icms_base")
+    icms_a    = r.get("icms_aliq")
+    icms_v    = r.get("icms_valor")
+    nova_f_mt = _detectar_formula_stf(r)
+    denom_mt  = None
+
+    if icms_b and icms_a and icms_v:
+        calc_icms = round(icms_b * icms_a / 100, 2)
+        dif_icms  = abs(calc_icms - icms_v)
+        metricas["calc_ICMS"]   = calc_icms
+        metricas["dif_ICMS_R$"] = round(dif_icms, 2)
+        if dif_icms > TOL_ICMS:
+            flags_inv.append(
+                f"ICMS math: {icms_b} x {icms_a}% = {calc_icms:.2f} != {icms_v:.2f} "
+                f"(dif={dif_icms:.2f})"
+            )
+    else:
+        metricas["dif_ICMS_R$"] = None
+
+    # 6b. Base de calculo ICMS Verde
+    if icms_a and r.get("pis_aliq") and r.get("cofins_aliq"):
+        icms_mt   = icms_a / 100
+        pis_mt    = r.get("pis_aliq") / 100
+        cofins_mt = r.get("cofins_aliq") / 100
+        denom_mt  = ((1 - icms_mt) * (1 - (pis_mt + cofins_mt)) if nova_f_mt
+                     else 1 - (icms_mt + pis_mt + cofins_mt))
+        metricas["formula_icms"] = "STF/2021" if nova_f_mt else "anterior_03-2023"
+
+        # Net SEM: tarifa_sem x qtd para cada componente; reativo: valor_com x denom → sem
+        net_verde_sem = (
+            (r.get("tarifa_dem_sem")     or 0) * (r.get("dem_ativa_qtd_kw")    or 0)
+          + (r.get("tarifa_tusd_np_sem") or 0) * (r.get("consumo_tusd_np_kwh") or 0)
+          + (r.get("tarifa_tusd_fp_sem") or 0) * (r.get("consumo_tusd_fp_kwh") or 0)
+          + (r.get("tarifa_te_np_sem")   or 0) * (r.get("consumo_te_np_kwh")   or 0)
+          + (r.get("tarifa_te_fp_sem")   or 0) * (r.get("consumo_te_fp_kwh")   or 0)
+          + (r.get("valor_cons_reat_np") or 0) * denom_mt
+          + (r.get("valor_cons_reat_fp") or 0) * denom_mt
+        )
+
+        if net_verde_sem > 0 and denom_mt > 0 and icms_b:
+            base_esp           = round(net_verde_sem / denom_mt, 2)
+            dif_base           = abs(base_esp - icms_b)
+            dif_base_pct       = dif_base / base_esp if base_esp else 0
+            metricas["base_icms_esp_verde"]    = base_esp
+            metricas["dif_base_icms_verde_R$"] = round(dif_base, 2)
+            if dif_base_pct > 0.001:
+                flags_inv.append(
+                    f"base ICMS Verde: fatura={icms_b:.2f} vs esperado={base_esp:.2f} "
+                    f"(dif={icms_b - base_esp:+.2f}, "
+                    f"formula {'nova STF' if nova_f_mt else 'antiga'})"
+                )
+
+    # 6c. Tarifa COM vs SEM/denom Verde
+    if icms_a and r.get("pis_aliq") and r.get("cofins_aliq") and denom_mt and denom_mt > 0:
+        for nome_mt, key_sem_mt, key_com_mt in [
+            ("Demanda", "tarifa_dem_sem",     "preco_dem_com"),
+            ("TUSD NP", "tarifa_tusd_np_sem", "preco_tusd_np_com"),
+            ("TUSD FP", "tarifa_tusd_fp_sem", "preco_tusd_fp_com"),
+            ("TE NP",   "tarifa_te_np_sem",   "preco_te_np_com"),
+            ("TE FP",   "tarifa_te_fp_sem",   "preco_te_fp_com"),
+        ]:
+            tar_sem   = r.get(key_sem_mt)
+            preco_com = r.get(key_com_mt)
+            if tar_sem and preco_com:
+                preco_exp = round(tar_sem / denom_mt, 8)
+                dif_pct   = abs(preco_com - preco_exp) / preco_exp if preco_exp else 0
+                if dif_pct > 0.0005:
+                    flags_div.append(
+                        f"tarifa COM {nome_mt}: fatura={preco_com:.8f} "
+                        f"vs esperado={preco_exp:.8f} "
+                        f"(sem={tar_sem:.8f}, dif={preco_com - preco_exp:+.8f}, "
+                        f"formula {'nova STF' if nova_f_mt else 'antiga'})"
+                    )
+
+    # 7. Soma dos itens vs total
+    total = r.get("total_fatura")
+    soma  = round(sum(filter(None, [
+        r.get("valor_dem_ativa"),
+        r.get("valor_tusd_np"),
+        r.get("valor_tusd_fp"),
+        r.get("valor_te_np"),
+        r.get("valor_te_fp"),
+        r.get("valor_dem_reat"),
+        r.get("valor_cons_reat_np"),
+        r.get("valor_cons_reat_fp"),
+        r.get("cosip"),
+        r.get("icms_cde"),
+        r.get("valor_encargos_cosip"),
+        r.get("valor_multas_nf"),
+        r.get("valor_juros_nf"),
+        r.get("valor_ipca"),
+        r.get("valor_imp_som_dim_mt"),
+        r.get("valor_parcelamento"),
+        r.get("valor_religacao"),
+        r.get("valor_outros_itens"),
+    ])), 2)
+    metricas["soma_itens_Verde_R$"] = soma
+    if total and soma:
+        dif_total = soma - total
+        dif_pct   = abs(dif_total) / total
+        metricas["dif_total_Verde_R$"] = round(dif_total, 2)
+        metricas["dif_total_Verde_%"]  = round(dif_pct * 100, 1)
+        if dif_pct > TOL_SOMA_INV:
+            flags_div.append(
+                f"soma itens R${soma:.2f} != total R${total:.2f} "
+                f"(dif={dif_total:+.2f}, {dif_pct*100:.0f}%) -- item nao extraido"
+            )
+        elif dif_pct > TOL_SOMA_OK:
+            flags_inv.append(
+                f"soma itens R${soma:.2f} != total R${total:.2f} "
+                f"(dif={dif_total:+.2f}, {dif_pct*100:.0f}%) -- possivel item nao extraido"
+            )
+    else:
+        metricas["dif_total_Verde_R$"] = None
+        metricas["dif_total_Verde_%"]  = None
+
+    # 8. Erros de extracao
+    if r.get("erro"):
+        flags_div.append(f"erro de extracao: {r['erro']}")
+
+    if flags_div:
+        return "DIVERGENCIA", flags_div + flags_inv, metricas
+    if flags_inv:
+        return "INVESTIGAR", flags_inv, metricas
+    return "OK", [], metricas
+
+
 # ─────────────────────────── AUDITORIA MT ───────────────────────────────────
 
 def _auditar_mt(r):
     """Auditoria completa para faturas MT (Grupo A) Neoenergia PE."""
+    # Dispatch por modalidade
+    if r.get("modalidade") == "Verde":
+        return _auditar_mt_verde(r)
+
     flags_div = []
     flags_inv = []
     metricas  = {}
