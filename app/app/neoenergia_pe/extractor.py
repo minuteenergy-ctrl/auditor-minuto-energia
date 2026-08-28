@@ -809,6 +809,257 @@ def _parse_danfe_mt(text):
     return d
 
 
+# ─────────────────────── LAYOUT DANFE MT VERDE (A4 Horo-sazonal Verde) ───────
+
+def _parse_danfe_mt_verde(text):
+    """
+    Extrai campos de faturas A4 Horo-sazonal Verde layout DANFE Neoenergia PE.
+    Chamado após _parse_danfe() com texto de TODAS as páginas concatenadas.
+    Acrescenta campos MT Verde e anula campos garbled do _parse_danfe().
+    """
+    d = {"is_mt": True}
+    d["constante_medidor"] = None  # será re-extraído do demonstrativo abaixo
+
+    _SUFIXO = r"\b(?:PIS|COFINS|ICMS|GRANDEZAS|Montante)\b"
+
+    def _item_nums(pattern, unit):
+        m = re.search(pattern + r"\s+" + unit + r"\s+([^\n]+)", text, re.IGNORECASE)
+        if not m:
+            return []
+        linha = re.split(_SUFIXO, m.group(1))[0]
+        return re.findall(r"[\d.]+,\d+", linha)
+
+    def _mt_item(pattern, unit):
+        """(qtd, preco_com, valor, tarifa_sem) — mesmo esquema do A4 Azul."""
+        nums = _item_nums(pattern, unit)
+        if len(nums) < 3:
+            return None, None, None, None
+        qtd        = _num(nums[0])
+        preco_com  = _num(nums[1])
+        valor      = _num(nums[2])
+        tarifa_sem = _num(nums[-1]) if len(nums) >= 4 else None
+        return qtd, preco_com, valor, tarifa_sem
+
+    # ── Subgrupo / Modalidade (fixo — Verde já identificado pelo trigger) ──
+    d["subgrupo"]   = "A4"
+    d["modalidade"] = "Verde"
+
+    # ── Grandeza contratada (única, Verde não tem NP/FP distintos) ────
+    m = re.search(r"Demanda Contratada\s+([\d.,]+)", text, re.IGNORECASE)
+    if m:
+        d["dem_contratada_kw"] = _num(m.group(1))
+
+    # ── Bandeira: "BANDEIRA VERDE" ou "bandeira em vigor é a Amarela" ─
+    m = re.search(r"BANDEIRA\s+(VERDE|AMARELA|VERMELHA|ESCASSEZ)", text, re.IGNORECASE)
+    if not m:
+        m = re.search(r"bandeira em vigor\b[^.]*?\b(verde|amarela|vermelha|escassez)", text, re.IGNORECASE)
+    if m:
+        d["bandeira"] = m.group(1).upper()
+
+    # ── Item: Demanda Ativa (uma única linha, sem distinção NP/FP) ────
+    qtd, preco, valor, tarifa = _mt_item(r"Demanda Ativa", r"kW")
+    d["dem_ativa_qtd_kw"] = qtd
+    d["preco_dem_com"]    = preco
+    d["valor_dem_ativa"]  = valor
+    d["tarifa_dem_sem"]   = tarifa
+
+    # ── Item: Demanda Reativa Excedente ───────────────────────────────
+    qtd2, _p, valor2, _t = _mt_item(r"Demanda Reativa Exc\.", r"kVAr")
+    d["dem_reat_kvar"]  = qtd2
+    d["valor_dem_reat"] = valor2
+
+    # ── Itens: Consumo TUSD NP / FP ───────────────────────────────────
+    qtd, preco, valor, tarifa = _mt_item(r"Consumo-TUSD NPonta", r"kWh")
+    d["consumo_tusd_np_kwh"]  = qtd
+    d["preco_tusd_np_com"]    = preco
+    d["valor_tusd_np"]        = valor
+    d["tarifa_tusd_np_sem"]   = tarifa
+
+    qtd, preco, valor, tarifa = _mt_item(r"Consumo-TUSD F\.?Ponta", r"kWh")
+    d["consumo_tusd_fp_kwh"]  = qtd
+    d["preco_tusd_fp_com"]    = preco
+    d["valor_tusd_fp"]        = valor
+    d["tarifa_tusd_fp_sem"]   = tarifa
+
+    # ── Itens: Consumo TE NP / FP ─────────────────────────────────────
+    qtd, preco, valor, tarifa = _mt_item(r"Consumo-TE Na Ponta", r"kWh")
+    d["consumo_te_np_kwh"]    = qtd
+    d["preco_te_np_com"]      = preco
+    d["valor_te_np"]          = valor
+    d["tarifa_te_np_sem"]     = tarifa
+
+    qtd, preco, valor, tarifa = _mt_item(r"Consumo-TE F\.?Ponta", r"kWh")
+    d["consumo_te_fp_kwh"]    = qtd
+    d["preco_te_fp_com"]      = preco
+    d["valor_te_fp"]          = valor
+    d["tarifa_te_fp_sem"]     = tarifa
+
+    # ── Itens: Consumo Reativo Excedente NP / FP ─────────────────────
+    qtd, _p, valor, _t = _mt_item(r"Cons\.Reat\.Exc\.NPonta", r"kVARh")
+    d["cons_reat_np_kvarh"] = qtd
+    d["valor_cons_reat_np"] = valor
+
+    qtd, _p, valor, _t = _mt_item(r"Cons\.Reat\s+Exc\.FPonta", r"kVARh")
+    d["cons_reat_fp_kvarh"] = qtd
+    d["valor_cons_reat_fp"] = valor
+
+    # ── Demonstrativo: medidor + consumo + demanda medida ────────────
+    # Formato página 1 (Verde): "3205284671 Energia Ativa Ponta lant latu const cons"
+    for pattern, key in [
+        (r"Energia Ativa Ponta",      "consumo_ponta_kwh"),
+        (r"Energia Ativa Fora Ponta", "consumo_fp_kwh"),
+    ]:
+        m = re.search(r"(\d{7,})\s+" + pattern + r"\s+([^\n]+)", text, re.IGNORECASE)
+        if m:
+            d.setdefault("medidor", m.group(1))
+            nums = re.findall(r"[\d.]+,\d+", m.group(2))
+            if nums:
+                d[key] = _num(nums[-1])        # último = consumo faturado
+            if len(nums) >= 3:
+                d["constante_medidor"] = _num(nums[-2])   # antepenúltimo = const
+
+    # "Demanda Ativa Ponta lant latu const dem_medida"
+    for pattern, key in [
+        (r"Demanda Ativa Ponta",      "demanda_medida_np_kw"),
+        (r"Demanda Ativa Fora Ponta", "demanda_medida_fp_kw"),
+    ]:
+        m = re.search(r"\d{7,}\s+" + pattern + r"\s+([^\n]+)", text, re.IGNORECASE)
+        if m:
+            nums = re.findall(r"[\d.]+,\d+", m.group(1))
+            if nums:
+                d[key] = _num(nums[-1])
+
+    return d
+
+
+# ─────────────────────── LAYOUT ANTIGO MT (A4 Horo-sazonal Verde) ────────────
+
+def _parse_antigo_mt(text):
+    """
+    Extrai campos MT-específicos de faturas A4 Horo-sazonal Verde layout ANTIGO.
+    Chamado APÓS _parse_antigo() com texto de TODAS as páginas concatenadas.
+    Cobre faturas Jul/2021 – Jul/2022.
+    """
+    d = {"is_mt": True, "layout_detalhe": "ANTIGO_MT"}
+
+    # ── Subgrupo / Modalidade ─────────────────────────────────────────
+    m = re.search(r"(A4)\s+Horo-sazonal\s+(Verde)", text, re.IGNORECASE)
+    if m:
+        d["subgrupo"]   = "A4"
+        d["modalidade"] = "Verde"
+
+    # ── Bandeira ──────────────────────────────────────────────────────
+    m = re.search(r"BANDEIRA\s+(VERDE|AMARELA|VERMELHA|ESCASSEZ)", text, re.IGNORECASE)
+    if m:
+        d["bandeira"] = m.group(1).upper()
+
+    # ── Seção TARIFAS APLICADAS (para extrair tarifas sem tributos) ───
+    ta_idx = text.find("TARIFAS APLICADAS")
+    tarifas_text = text[ta_idx:] if ta_idx >= 0 else ""
+
+    def _tarifa(pattern):
+        """Primeira tarifa (1 número) após o padrão na seção TARIFAS APLICADAS."""
+        pm = re.search(pattern + r"\S*\s+([\d.,]+)", tarifas_text, re.IGNORECASE)
+        return _num(pm.group(1)) if pm else None
+
+    # ── Itens (seção DESCRIÇÃO DA NOTA FISCAL) ───────────────────────
+    def _item(pattern):
+        """(qtd, preco_com, valor) da linha de item ANTIGO MT."""
+        im = re.search(pattern + r"\s+([\d.,]+)\s+([\d.,]+)\s+([\d.,]+)", text, re.IGNORECASE)
+        if not im:
+            return None, None, None
+        return _num(im.group(1)), _num(im.group(2)), _num(im.group(3))
+
+    qtd, preco, valor = _item(r"Demanda Ativa\(kW\)")
+    d["dem_ativa_qtd_kw"] = qtd
+    d["preco_dem_com"]    = preco
+    d["valor_dem_ativa"]  = valor
+    d["tarifa_dem_sem"]   = _tarifa(r"Demanda Ativa\(kW\)")
+
+    qtd, preco, valor = _item(r"Demanda Reativa Excedente\.\(kVAR\)")
+    d["dem_reat_kvar"]  = qtd
+    d["valor_dem_reat"] = valor
+
+    qtd, preco, valor = _item(r"Consumo Ativo Na Ponta\(kWh\)-TUSD")
+    d["consumo_tusd_np_kwh"] = qtd
+    d["preco_tusd_np_com"]   = preco
+    d["valor_tusd_np"]       = valor
+    d["tarifa_tusd_np_sem"]  = _tarifa(r"Consumo Ativo Na Ponta\(kWh\)-TUSD")
+
+    qtd, preco, valor = _item(r"Consumo Ativo Fora de Ponta\(kWh\)-TUSD")
+    d["consumo_tusd_fp_kwh"] = qtd
+    d["preco_tusd_fp_com"]   = preco
+    d["valor_tusd_fp"]       = valor
+    d["tarifa_tusd_fp_sem"]  = _tarifa(r"Consumo Ativo Fora de Ponta\(kWh\)-TUSD")
+
+    qtd, preco, valor = _item(r"Consumo Ativo Na Ponta\(kWh\)-TE")
+    d["consumo_te_np_kwh"] = qtd
+    d["preco_te_np_com"]   = preco
+    d["valor_te_np"]       = valor
+    d["tarifa_te_np_sem"]  = _tarifa(r"Consumo Ativo Na Ponta\(kWh\)-TE")
+
+    qtd, preco, valor = _item(r"Consumo Ativo Fora Ponta\(kWh\)-TE")
+    d["consumo_te_fp_kwh"] = qtd
+    d["preco_te_fp_com"]   = preco
+    d["valor_te_fp"]       = valor
+    d["tarifa_te_fp_sem"]  = _tarifa(r"Consumo Ativo Fora Ponta\(kWh\)-TE")
+
+    qtd, preco, valor = _item(r"Consumo Reativo Exc\. Na Ponta\(kVARh\)")
+    d["cons_reat_np_kvarh"] = qtd
+    d["valor_cons_reat_np"] = valor
+
+    qtd, preco, valor = _item(r"Consumo Reativo Exc\. Fora Ponta\(kVARh\)")
+    d["cons_reat_fp_kvarh"] = qtd
+    d["valor_cons_reat_fp"] = valor
+
+    # ── Demonstrativo (página 2) ──────────────────────────────────────
+    # Medidor: "N° medidor - 3010033625 / Ciclo ..."
+    m = re.search(r"N[°o]\s*medidor\s*-\s*(\d+)", text, re.IGNORECASE)
+    if m:
+        d["medidor"] = m.group(1)
+
+    # Referência de faturamento: "07/2021 31/08/2021" ou "07/2021 / Dias"
+    # (ANTIGO MT — _parse_antigo nao captura pois usa formato BT diferente)
+    m = re.search(r"\b(\d{2}/\d{4})\s+(?:\d{2}/\d{2}/\d{4}|/)", text)
+    if m:
+        d["ref_mes_ano"] = m.group(1)
+
+    # Demanda contratada: "Demanda: 50.00" (usa ponto decimal — não usar _num)
+    m = re.search(r"Demanda:\s*([\d.]+)", text)
+    if m:
+        try:
+            d["dem_contratada_kw"] = float(m.group(1))
+        except ValueError:
+            pass
+
+    # Consumo medido: "Consumo Ativo Na Ponta lant latu const ajuste faturado"
+    # ajuste pode ter trailing dash: "184,58-"; último número = faturado.
+    # Requer dígito após \s+ para evitar capturar "Consumo Ativo Na Ponta em kWh" (header de gráfico).
+    for pattern, key in [
+        (r"Consumo Ativo Na Ponta",      "consumo_ponta_kwh"),
+        (r"Consumo Ativo Fora de Ponta", "consumo_fp_kwh"),
+    ]:
+        m = re.search(pattern + r"\s+([\d.,][^\n]*)", text, re.IGNORECASE)
+        if m:
+            linha = re.sub(r"([\d.,]+)-", r"-\1", m.group(1))   # "184,58-" → "-184,58"
+            nums = re.findall(r"-?[\d.]+,\d+", linha)
+            if nums:
+                d[key] = abs(_num(nums[-1]) or 0)
+
+    # Demanda medida: "Demanda Máxima Na Ponta lant latu const demanda"
+    for pattern, key in [
+        (r"Demanda M[áa]xima Na Ponta",      "demanda_medida_np_kw"),
+        (r"Demanda M[áa]xima Fora de Ponta", "demanda_medida_fp_kw"),
+    ]:
+        m = re.search(pattern + r"\s+([^\n]+)", text, re.IGNORECASE)
+        if m:
+            nums = re.findall(r"[\d.]+,\d+", m.group(1))
+            if nums:
+                d[key] = _num(nums[-1])
+
+    return d
+
+
 # ─────────────────────────── PARSER PRINCIPAL ───────────────────────────────
 
 def parse_fatura(pdf_path):
@@ -823,15 +1074,24 @@ def parse_fatura(pdf_path):
                 result["layout"] = "DANFE"
                 words = page.extract_words()
                 fields = _parse_danfe(text, tables, words)
-                if "Uso Sistema Fio NP" in text:
-                    # Fatura MT (Grupo A): Demonstrativo fica na pagina 2, ler todas as paginas
+                if "Uso Sistema Fio NP" in text:               # A4 Azul MT
                     full_text = "\n".join(
                         (pdf.pages[i].extract_text() or "") for i in range(len(pdf.pages))
                     )
                     fields.update(_parse_danfe_mt(full_text))
+                elif "Consumo-TUSD NPonta" in text:            # A4 Verde MT
+                    full_text = "\n".join(
+                        (pdf.pages[i].extract_text() or "") for i in range(len(pdf.pages))
+                    )
+                    fields.update(_parse_danfe_mt_verde(full_text))
             elif "NOTA FISCAL | FATURA" in text:
                 result["layout"] = "ANTIGO"
                 fields = _parse_antigo(text, tables)
+                if "A4 Horo-sazonal" in text:                  # ANTIGO MT Verde
+                    full_text = "\n".join(
+                        (pdf.pages[i].extract_text() or "") for i in range(len(pdf.pages))
+                    )
+                    fields.update(_parse_antigo_mt(full_text))
             else:
                 result["layout"] = "DESCONHECIDO"
                 result["erro"]   = "Layout nao reconhecido"
