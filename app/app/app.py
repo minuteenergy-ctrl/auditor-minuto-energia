@@ -62,7 +62,8 @@ def normalizar_neoenergia_pe(rec, triagem, motivos, metricas):
         "vencimento":     rec.get("vencimento"),
         "conta_uc":       rec.get("conta_contrato"),
         "cliente_nome":   None,
-        "subgrupo":       "B3",
+        "subgrupo":       rec.get("subgrupo", "B3"),
+        "is_mt":          rec.get("is_mt", False),
         "data_emissao":   rec.get("data_emissao"),
         "nr_nota_fiscal": rec.get("nr_nota_fiscal"),
         "nr_medidor":     rec.get("nr_medidor"),
@@ -555,6 +556,8 @@ def aplicar_check_cosip(registros, tolerancia=0.10):
         if uc and cosip and cosip > 0:
             uc_cosips[uc].append(cosip)
     for reg in registros:
+        if reg.get("is_mt"):
+            continue
         uc = reg.get("conta_uc")
         cosip = reg.get("cosip")
         if not uc or not cosip or cosip <= 0:
